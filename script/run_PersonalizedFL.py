@@ -1,9 +1,9 @@
 from FedBioNLP.processors import process_dataset
 import argparse
-from FedBioNLP.utils import set_seed
+from FedBioNLP import set_seed
 import os
-from FedBioNLP.utils.plt_utils import plot_dirichlet
-from FedBioNLP.utils.fl_utils import sta_dis
+from FedBioNLP import plot_dirichlet
+from FedBioNLP import sta_dis
 
 os.path.expanduser('~/FedBioNLP')
 

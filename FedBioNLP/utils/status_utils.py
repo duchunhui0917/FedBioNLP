@@ -1,14 +1,14 @@
 import numpy as np
 import logging
 from sklearn.metrics.pairwise import cosine_similarity, pairwise_distances
-from FedBioNLP.utils.CKA import linear_CKA
+from CKA import linear_CKA
 from sklearn.manifold import TSNE
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics.cluster import rand_score
 from sklearn.mixture import GaussianMixture
 from sklearn.decomposition import PCA
-from FedBioNLP.utils.cmp_mmd import mmd
+from MMD import mmd
 import torch
 
 
@@ -120,3 +120,17 @@ def tensor_cos_sim(tensor1, tensor2):
 
 def distribution_cosine(dist1, dist2):
     pass
+
+
+def status_distribution(datasets, n_classes):
+    # np.set_printoptions(precision=2)
+    n = len(datasets)
+    mtx = np.zeros((n, n_classes), dtype=np.int)
+    mtx_ = np.zeros((n, n_classes), dtype=np.float)
+    for i in range(n):
+        for data, label in datasets[i]:
+            mtx[i][label] += 1
+        mtx_[i][:] = mtx[i][:] / sum(mtx[i][:])
+    print(mtx)
+    # print(mtx_)
+    return mtx

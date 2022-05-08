@@ -3,7 +3,7 @@ import copy
 import numpy as np
 import torch
 from torch import nn
-from FedBioNLP.utils.sta_utils import param_cosine
+from FedBioNLP import param_cosine
 
 x1 = np.random.normal(2, 4, (100, 10))
 x2 = np.random.normal(0, 4, (100, 10))

@@ -1,6 +1,6 @@
 from FedBioNLP.processors import process_dataset
 import argparse
-from FedBioNLP.utils import set_seed
+from FedBioNLP import set_seed
 import os
 
 os.path.expanduser('~/FedBioNLP')

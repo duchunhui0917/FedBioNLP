@@ -2,7 +2,7 @@ from FedBioNLP.clients import *
 from FedBioNLP.utils.common_utils import set_seed
 import numpy as np
 from torch.utils.data import DataLoader
-from FedBioNLP.utils.sta_utils import tensor_cos_sim
+from FedBioNLP.utils.status_utils import tensor_cos_sim
 
 set_seed(2333)
 

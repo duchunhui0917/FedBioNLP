@@ -4,14 +4,17 @@ import json
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
+import pylab
+import networkx as nx
+
+base_dir = os.path.expanduser('~/FedBioNLP')
 
 
-def sta_ht(name_list):
-    base_dir = os.path.expanduser('~/FedBioNLP/data')
+def plot_heatmap(name_list):
     length_dict = {}
     for name in name_list:
         print(name)
-        h5_path = os.path.join(base_dir, f'{name}_data.h5')
+        h5_path = os.path.join(base_dir, f'data/{name}_data.h5')
         length_list = []
         with h5py.File(h5_path, 'r+') as hf:
             attributes = json.loads(hf["attributes"][()])

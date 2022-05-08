@@ -7,6 +7,7 @@ from torch import nn
 from transformers import AutoModel, AutoModelForMaskedLM
 from FedBioNLP.utils.GCN_utils import GraphConvolution, LSR
 from FedBioNLP.tokenizers import *
+from FedBioNLP.datasets import *
 import logging
 
 logger = logging.getLogger(os.path.basename(__file__))

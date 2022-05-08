@@ -3,7 +3,7 @@ import json
 import os
 import h5py
 import pandas as pd
-from FedBioNLP.utils.aug_data import aug_back_translate, aug_tfidf, aug_label_reverse
+from FedBioNLP import aug_back_translate, aug_tfidf, aug_label_reverse
 from stanfordcorenlp import StanfordCoreNLP
 from tqdm import tqdm
 

@@ -2,7 +2,7 @@ import copy
 import os.path
 from FedBioNLP.processors import process_dataset
 import argparse
-from FedBioNLP.utils.sta_utils import cmp_CKA_sim, cmp_l2_norm
+from FedBioNLP import cmp_CKA_sim, cmp_l2_norm
 
 parser = argparse.ArgumentParser()
 base_dir = os.path.expanduser('~/FedBioNLP')

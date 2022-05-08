@@ -1,6 +1,8 @@
 import time
 import math
 import numpy as np
+
+
 # import cupy as np
 
 
@@ -51,7 +53,6 @@ def kernel_CKA(X, Y, sigma=None):
     var2 = np.sqrt(kernel_HSIC(Y, Y, sigma))
 
     return hsic / (var1 * var2)
-
 
 # if __name__ == '__main__':
 #     X = np.random.random((10000, 64))

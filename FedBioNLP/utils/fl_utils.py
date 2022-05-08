@@ -97,20 +97,6 @@ def sta_param_norm(client_models_list):
     return norms
 
 
-def sta_dis(datasets, n_classes):
-    # np.set_printoptions(precision=2)
-    n = len(datasets)
-    mtx = np.zeros((n, n_classes), dtype=np.int)
-    mtx_ = np.zeros((n, n_classes), dtype=np.float)
-    for i in range(n):
-        for data, label in datasets[i]:
-            mtx[i][label] += 1
-        mtx_[i][:] = mtx[i][:] / sum(mtx[i][:])
-    print(mtx)
-    # print(mtx_)
-    return mtx
-
-
 def flat_model(model):
     param = np.array([])
     for p in model.parameters():

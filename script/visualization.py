@@ -2,7 +2,7 @@ import os.path
 import numpy as np
 from FedBioNLP.processors import process_dataset
 import argparse
-from FedBioNLP.utils.sta_utils import visualize_features, cmp_cosine_euclidean
+from FedBioNLP import visualize_features, cmp_cosine_euclidean
 import pickle
 
 parser = argparse.ArgumentParser()

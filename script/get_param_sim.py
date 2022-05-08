@@ -3,7 +3,7 @@ import os.path
 import numpy as np
 from FedBioNLP.processors import process_dataset
 import argparse
-from FedBioNLP.utils.sta_utils import param_cosine
+from FedBioNLP import param_cosine
 
 parser = argparse.ArgumentParser()
 base_dir = os.path.expanduser('~/FedBioNLP')

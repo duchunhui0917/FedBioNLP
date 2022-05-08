@@ -1,8 +1,8 @@
 from FedBioNLP.datasets import process_dataset
 import argparse
-from FedBioNLP.utils import set_seed, plot_dirichlet
-from FedBioNLP.utils.fl_utils import sta_dis
-from FedBioNLP.utils.sta_utils import visualize_features
+from FedBioNLP import set_seed, plot_dirichlet
+from FedBioNLP import sta_dis
+from FedBioNLP import visualize_features
 import os
 
 os.path.expanduser('~/cross_silo_FL')
