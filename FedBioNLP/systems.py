@@ -1,46 +1,42 @@
-from FedBioNLP.clients import *
-from FedBioNLP.utils.common_utils import set_seed
+import json
+from .clients import *
 import numpy as np
 from torch.utils.data import DataLoader
-from FedBioNLP.utils.status_utils import tensor_cos_sim
-
-set_seed(2333)
+from .utils.status_utils import tensor_cos_sim
 
 logger = logging.getLogger(os.path.basename(__file__))
 
 
 class BaseSystem(object):
-    def __init__(self, client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                 model, device, ckpt,
-                 n_iterations=100, n_epochs=1, n_batches=0,
-                 lr=0.01, batch_size=64, default_batch_size=32, opt='SGD', aggregate_method='sample'):
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
         self.n_samples = [len(val) for val in train_datasets.values()]
-        self.n_clients = len(client_ids)
+        self.n_clients = len(train_datasets)
         self.dataset = test_dataset
-        self.client_ids = client_ids
         self.model = copy.deepcopy(model)
-        self.n_iterations = n_iterations
-
-        self.clients = []
-        self.server = None
-        self.device = device
+        self.n_iterations = args.n_iterations
+        if isinstance(args.batch_size, list):
+            self.batch_size = args.batch_size
+        else:
+            self.batch_size = [args.batch_size for _ in range(self.n_clients)]
+        if isinstance(args.n_epochs, list):
+            self.n_epochs = args.n_epochs
+        else:
+            self.n_epochs = [args.n_epochs for _ in range(self.n_clients)]
+        self.default_batch_size = 32
         self.n_classes = test_dataset.n_classes
-        self.batch_size = batch_size if isinstance(batch_size, list) else [batch_size for _ in range(self.n_clients)]
-        self.lr = lr
-        self.n_epochs = n_epochs if isinstance(n_epochs, list) else [n_epochs for _ in range(self.n_clients)]
-        self.n_batches = n_batches
-        self.opt = opt
-        self.aggregate_method = aggregate_method
+        self.lr = args.lr
+        self.n_batches = args.n_batches
+        self.opt = args.opt
         self.g_best_metric = 0
 
-        self.ckpt = f'{ckpt}.pth'
+        self.ckpt = f'{args.ckpt}.pth'
 
         self.train_loaders = [DataLoader(v, batch_size=self.batch_size[k], shuffle=True, drop_last=True)
                               for k, v in train_datasets.items()]
-        self.test_loaders = [DataLoader(v, batch_size=default_batch_size)
+        self.test_loaders = [DataLoader(v, batch_size=self.default_batch_size)
                              for k, v in test_datasets.items()]
-        self.train_loader = DataLoader(train_dataset, batch_size=default_batch_size, shuffle=True, drop_last=True)
-        self.test_loader = DataLoader(test_dataset, batch_size=default_batch_size)
+        self.train_loader = DataLoader(train_dataset, batch_size=self.default_batch_size, shuffle=True, drop_last=True)
+        self.test_loader = DataLoader(test_dataset, batch_size=self.default_batch_size)
         self.ite = 0
 
     def run(self):
@@ -111,16 +107,11 @@ class BaseSystem(object):
 
 
 class CentralizedSystem(BaseSystem):
-    def __init__(self, client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                 model, device, path, **kwargs):
-        super(CentralizedSystem, self).__init__(client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                                                model, device, path, **kwargs)
-        self.client = BaseClient(0, self.train_loader, self.test_loader, model, device,
-                                 self.batch_size, self.lr, self.opt, self.n_epochs[0], self.n_batches)
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
+        super(CentralizedSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+        self.client = BaseClient(0, self.train_loader, self.test_loader, model, args)
 
     def run(self, m='f1'):
-        logger.info('******running centralized system******')
-
         for ite in range(self.n_iterations):
             logger.info(f'iteration: {ite}')
 
@@ -133,38 +124,34 @@ class CentralizedSystem(BaseSystem):
             test_metric = metrics[m]
 
             if test_metric > self.g_best_metric:
-                torch.save(self.model.state_dict(), self.ckpt_path)
+                torch.save(self.model.state_dict(), self.ckpt)
                 self.g_best_metric = test_metric
                 logger.info('new model saved')
             logger.info(f'best {m}: {self.g_best_metric:.4f}')
 
 
 class FedAvgSystem(BaseSystem):
-    def __init__(self, client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                 model, device, ckpt, cm=0, sm=0, centralized=True, personalized=False, layers='.', **kwargs):
-        super(FedAvgSystem, self).__init__(client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                                           model, device, ckpt, **kwargs)
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
+        super(FedAvgSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+        self.aggregate_method = args.aggregate_method
 
         self.clients = [
-            BaseClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, device,
-                       self.batch_size, self.lr, self.opt, self.n_epochs[client_id], self.n_batches, momentum=cm)
-            for client_id in self.client_ids
+            BaseClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
+            for client_id in range(self.n_clients)
         ]
-        self.weights = self.cmp_weights()
-        self.momentum = sm
-        self.centralized = centralized
-        self.personalized = personalized
+        self.weights = self.compute_weights()
+        self.momentum = args.sm
+        self.centralized = args.centralized
+        self.personalized = args.personalized
         self.p_best_metric = 0
         self.ckpts = [f'{self.ckpt}_{i}.pth' for i in range(self.n_clients)]
-        self.layers = layers.split('*')
+        self.layers = args.layers.split('*')
 
         self.personal_model_dicts = [self.model.state_dict() for _ in range(self.n_clients)]
         self.personal_grad_dicts = [[{} for _ in range(self.n_clients)] for _ in range(self.n_clients)]
         self.cos_sims = {}
 
     def run(self, m='f1'):
-        logger.info('******running FedAvg system******')
-
         for self.ite in range(self.n_iterations):
             logger.info(f'iteration: {self.ite}')
 
@@ -213,12 +200,14 @@ class FedAvgSystem(BaseSystem):
         p_test_metrics = []
 
         for i, data_loader in enumerate(self.test_loaders):
-            if self.centralized or self.ite == 0:
+            if self.centralized:
+                logger.info(f'test client {i} global model')
                 model = copy.deepcopy(self.model)
                 metrics = self.test_model(model, data_loader=data_loader)[0]
                 g_test_metrics.append(metrics[m])
 
             if self.personalized:
+                logger.info(f'test client {i} personal model')
                 model = copy.deepcopy(self.clients[i].model)
                 metrics = self.test_model(model, data_loader=data_loader)[0]
                 p_test_metrics.append(metrics[m])
@@ -241,7 +230,6 @@ class FedAvgSystem(BaseSystem):
         logger.info(f'personal best {m}: {self.p_best_metric:.4f}')
 
     def compute_cos_sims(self):
-        np.set_printoptions(precision=4)
         for key in self.model.state_dict().keys():
             self.cos_sims.update({key: np.zeros((self.n_clients, self.n_clients))})
             for i in range(self.n_clients):
@@ -256,9 +244,10 @@ class FedAvgSystem(BaseSystem):
                 if layer in key:
                     cos_sim = (cos_sim * count + val) / (count + 1)
                     count += 1
+            cos_sim = json.dumps(np.around(cos_sim, decimals=4).tolist())
             logger.info(f'layer {layer} cosine similarity matrix\n{cos_sim}')
 
-    def cmp_weights(self):
+    def compute_weights(self):
         if self.aggregate_method == 'sample':
             weights = self.n_samples
             weights = np.array([w / sum(weights) for w in weights])
@@ -268,76 +257,56 @@ class FedAvgSystem(BaseSystem):
 
 
 class FedProxSystem(FedAvgSystem):
-    def __init__(self, client_ids, train_datasets, test_datasets, train_dataset, test_dataset, model, device, mu,
-                 ckpt, **kwargs):
-        super(FedProxSystem, self).__init__(client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                                            model, device, ckpt, **kwargs)
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
+        super(FedProxSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
 
         self.clients = [
-            FedProxClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, device, mu,
-                          self.batch_size, self.lr, self.opt, self.n_epochs[client_id], self.n_batches)
-            for client_id in self.client_ids
+            FedProxClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
+            for client_id in range(self.n_clients)
         ]
 
 
 class HarmoFLSystem(FedAvgSystem):
-    def __init__(self, client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                 model, device, ckpt, perturbation, **kwargs):
-        super(HarmoFLSystem, self).__init__(client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                                            model, device, ckpt, **kwargs)
-        self.perturbation = perturbation
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
+        super(HarmoFLSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+        self.perturbation = args.perturbation
         self.clients = [
-            HarmoFLClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, device,
-                          self.batch_size, self.lr, self.opt, self.n_epochs[client_id], self.n_batches, self.momentum,
-                          perturbation=perturbation)
-            for client_id in self.client_ids
+            HarmoFLClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
+            for client_id in range(self.n_clients)
         ]
 
 
 class MOONSystem(FedAvgSystem):
-    def __init__(self, client_ids, train_datasets, test_datasets, train_dataset, test_dataset, model, device, mu,
-                 temperature, ckpt, **kwargs):
-        super(MOONSystem, self).__init__(client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                                         model, device, ckpt, **kwargs)
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
+        super(MOONSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
 
         self.clients = [
-            MOONClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id],
-                       model, device, mu, temperature, self.batch_size, self.lr, self.opt, self.epochs[client_id])
-            for client_id in self.client_ids
+            MOONClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
+            for client_id in range(self.n_clients)
         ]
 
 
-class PersonalizedFLSystem(FedAvgSystem):
-    def __init__(self, client_ids, train_datasets, test_datasets, train_dataset, test_dataset, model, device, ckpt,
-                 pk='classifier', **kwargs):
-        super(PersonalizedFLSystem, self).__init__(client_ids, train_datasets, test_datasets, train_dataset,
-                                                   test_dataset, model, device, ckpt, **kwargs)
+class PartialFLSystem(FedAvgSystem):
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
+        super(PartialFLSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
 
         self.clients = [
-            PersonalizedClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, device,
-                               self.batch_size, self.lr, self.opt, self.n_epochs[client_id], self.n_batches, pk)
-            for client_id in self.client_ids
+            PartialFLClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
+            for client_id in range(self.n_clients)
         ]
 
 
 class FedGSSystem(FedAvgSystem):
-    def __init__(self, client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                 model, device, ckpt, cm=0, sm=0, **kwargs):
-        super(FedGSSystem, self).__init__(client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                                          model, device, ckpt, **kwargs)
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
+        super(FedGSSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
         self.test_metrics = [0 for _ in range(self.n_clients)]
 
         self.clients = [
-            BaseClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, device,
-                       self.batch_size, self.lr, self.opt, self.n_epochs[client_id], self.n_batches,
-                       momentum=cm)
-            for client_id in self.client_ids
+            BaseClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
+            for client_id in range(self.n_clients)
         ]
-        self.momentum = sm
 
     def run(self, m='f1'):
-        logger.info('******running FedGS system******')
-
         for ite in range(self.n_iterations):
             logger.info(f'iteration: {ite}')
 
@@ -396,15 +365,14 @@ def reshape_to_matrix(x):
 
 
 class FedGPSystem(FedGSSystem):
-    def __init__(self, client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                 model, device, ckpt, **kwargs):
-        super(FedGPSystem, self).__init__(client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                                          model, device, ckpt, **kwargs)
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
+        super(FedGPSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
 
     def update_personal_grad_dicts(self):
         for i in range(self.n_clients):
             for key, value in self.model.state_dict().items():
                 x1 = self.personal_grad_dicts[i][i][key]
+                x1_norm = torch.norm(x1, 2)
                 x1_, shape1 = reshape_to_matrix(x1)
                 U, D1, V = np.linalg.svd(x1_)
                 # threshold = 0.9
@@ -417,6 +385,8 @@ class FedGPSystem(FedGSSystem):
 
                 for j in range(self.n_clients):
                     x2 = self.personal_grad_dicts[i][j][key]
+                    x2_norm = torch.norm(x2, 2)
+                    x2 = (x1_norm / x2_norm) * x2
                     x2_, shape2 = reshape_to_matrix(x2)
                     D2 = np.matmul(np.matmul(U_inv, x2_), V_inv)
                     sign = np.sign(D2)
@@ -427,17 +397,14 @@ class FedGPSystem(FedGSSystem):
 
 
 class SoloSystem(BaseSystem):
-    def __init__(self, client_ids, train_datasets, test_datasets, train_dataset, test_dataset, model, device, **kwargs):
-        super(SoloSystem, self).__init__(client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                                         model, device, **kwargs)
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
+        super(SoloSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
         self.clients = [
-            BaseClient(client_id, train_datasets[client_id], test_datasets[client_id], model, device,
-                       self.batch_size, self.lr, self.opt, self.epochs[client_id], **kwargs)
-            for client_id in self.client_ids
+            BaseClient(client_id, train_datasets[client_id], test_datasets[client_id], model, args)
+            for client_id in range(self.n_clients)
         ]
 
     def run(self):
-        logger.info('******running centralized federated learning system******')
         metrics = []
 
         for ite in range(self.n_iterations):
@@ -488,7 +455,6 @@ class DFLSystem(BaseSystem):
         self.client_models = [copy.deepcopy(model) for _ in range(self.n_clients)]
 
     def run(self):
-        logger.info('******running decentralized federated learning system******')
         logger.info(f'spectral gap: {self.spectral_gap}')
         loss, train_acc, test_acc, test_auc = (np.zeros((self.iterations,)) for _ in range(4))
         ite = 0
@@ -550,7 +516,6 @@ class ServerSystem(BaseSystem):
         ]
 
     def run(self):
-        logger.info('******running centralized federated learning system******')
         test_acc = np.zeros((self.iterations,))
         client_model_list = []
 

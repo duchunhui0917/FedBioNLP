@@ -1,6 +1,4 @@
-import logging
 import os.path
-
 from matplotlib import pyplot as plt
 import math
 import numpy as np
@@ -11,8 +9,6 @@ from sklearn.cluster import KMeans
 import json
 import h5py
 import pickle
-from tqdm import tqdm
-import time
 
 
 def get_embedding_Kmeans(embedding_exist, corpus, n_clients, bsz=16):

@@ -36,7 +36,9 @@ class WPOptim(torch.optim.Optimizer):
     def step(self, zero_grad=False):
         for group in self.param_groups:
             for p in group["params"]:
-                if p.grad is None: continue
+                if p.grad is None:
+                    continue
                 p.sub_(self.state[p]["delta"])
         self.base_optimizer.step()
-        if zero_grad: self.zero_grad()
+        if zero_grad:
+            self.zero_grad()

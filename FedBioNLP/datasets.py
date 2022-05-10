@@ -1,6 +1,10 @@
+import json
+
 from torch.utils.data import Dataset
-from FedBioNLP.tokenizers import *
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
+import logging
+import os
+from .tokenizers import *
 
 logger = logging.getLogger(os.path.basename(__file__))
 
@@ -40,6 +44,7 @@ class BaseDataset(Dataset):
             recall = recall_score(labels, pred_labels, average='macro')
             f1 = f1_score(labels, pred_labels, average='macro')
             cf = confusion_matrix(labels, pred_labels)
+            cf = json.dumps(cf.tolist())
             logger.info(f'confusion matrix\n{cf}')
             metric.update({'acc': acc, 'precision': precision, 'recall': recall, 'f1': f1})
             for key, val in metric.items():

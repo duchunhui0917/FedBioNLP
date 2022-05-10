@@ -3,20 +3,18 @@ import copy
 from torch import optim, nn
 from tqdm import tqdm
 import torch.nn.functional as F
-from FedBioNLP.utils.common_utils import AverageMeter
 from collections import OrderedDict
-from FedBioNLP.optimers import WPOptim
-from FedBioNLP.utils.fl_utils import BatchIterator
-import logging
+from .optimers import WPOptim
+from .utils.fl_utils import BatchIterator
+from .utils.common_utils import AverageMeter
 import os
+import logging
 
 logger = logging.getLogger(os.path.basename(__file__))
 
 
 class BaseClient(object):
-    def __init__(self, client_id, train_loader, test_loader,
-                 model, device, batch_size, lr, opt, n_epochs,
-                 n_batches, momentum=0):
+    def __init__(self, client_id, train_loader, test_loader, model, args):
         self.client_id = client_id
         self.train_loader = train_loader
         self.test_loader = test_loader
@@ -24,13 +22,11 @@ class BaseClient(object):
         self.test_dataset = test_loader.dataset
 
         self.model = copy.deepcopy(model)
-        self.device = device
-        self.lr = lr
-        self.opt = opt
-        self.n_epochs = n_epochs
-        self.n_batches = n_batches
-
-        self.momentum = momentum
+        self.lr = args.lr
+        self.opt = args.opt
+        self.n_epochs = args.n_epochs
+        self.n_batches = args.n_batches
+        self.momentum = args.cm
 
         if self.opt == 'Adam':
             self.optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.model.parameters()), lr=self.lr)
@@ -42,7 +38,7 @@ class BaseClient(object):
 
     def train_model(self):
         model = nn.parallel.DataParallel(self.model)
-        model.to(self.device)
+        model.cuda()
         model.train()
 
         for epoch in range(self.n_epochs):
@@ -61,7 +57,7 @@ class BaseClient(object):
                 self.optimizer.zero_grad()
 
                 inputs, labels = data
-                inputs, labels = [x.to(self.device) for x in inputs], [x.to(self.device) for x in labels]
+                inputs, labels = [x.cuda() for x in inputs], [x.cuda() for x in labels]
 
                 features, logits, losses = model(inputs, labels)
                 losses[0].mean().backward()
@@ -96,13 +92,9 @@ class BaseClient(object):
 
 
 class HarmoFLClient(BaseClient):
-    def __init__(self, client_id, train_loader, test_loader,
-                 model, device, batch_size, lr, opt, n_epochs,
-                 n_batches, momentum, perturbation=0.05):
-        super(HarmoFLClient, self).__init__(client_id, train_loader, test_loader,
-                                            model, device, batch_size, lr, opt, n_epochs,
-                                            n_batches, momentum=0)
-        self.perturbation = perturbation
+    def __init__(self, client_id, train_loader, test_loader, model, args):
+        super(HarmoFLClient, self).__init__(client_id, train_loader, test_loader, model, args)
+        self.perturbation = args.perturbation
         self.optimizer = WPOptim(params=self.model.parameters(), base_optimizer=optim.Adam, lr=self.lr,
                                  alpha=self.perturbation, weight_decay=1e-4)
 
@@ -164,11 +156,9 @@ class HarmoFLClient(BaseClient):
 
 
 class FedProxClient(BaseClient):
-    def __init__(self, client_id, train_dataset, test_dataset, model, device, alpha, batch_size, lr, opt,
-                 n_epochs, n_batches):
-        super(FedProxClient, self).__init__(client_id, train_dataset, test_dataset, model, device, batch_size, lr,
-                                            opt, n_epochs, n_batches)
-        self.alpha = alpha
+    def __init__(self, client_id, train_dataset, test_dataset, model, args):
+        super(FedProxClient, self).__init__(client_id, train_dataset, test_dataset, model, args)
+        self.mu = args.mu
 
     def train_model(self):
         global_model = copy.deepcopy(self.model)
@@ -205,7 +195,7 @@ class FedProxClient(BaseClient):
                     count += 1
                 features, logits, losses = model(inputs, labels)
                 cel = losses[0].mean()
-                loss = cel + self.alpha * nl
+                loss = cel + self.mu * nl
                 loss.backward()
                 self.optimizer.step()
 
@@ -228,14 +218,11 @@ class FedProxClient(BaseClient):
 
 
 class MOONClient(BaseClient):
-    def __init__(self, client_id, train_dataset, test_dataset, model, device, alpha, temperature, batch_size, lr,
-                 opt,
-                 epochs):
-        super(MOONClient, self).__init__(client_id, train_dataset, test_dataset, model, device, batch_size,
-                                         lr, opt, epochs)
+    def __init__(self, client_id, train_dataset, test_dataset, model, args):
+        super(MOONClient, self).__init__(client_id, train_dataset, test_dataset, model, args)
         self.pre_model = copy.deepcopy(self.model)
-        self.alpha = alpha
-        self.temperature = temperature
+        self.mu = args.mu
+        self.temperature = args.temperature
 
     def train_model(self):
         global_model = copy.deepcopy(self.model)
@@ -251,7 +238,7 @@ class MOONClient(BaseClient):
         model.to(self.device)
 
         epoch = 0
-        while epoch < self.epochs:
+        while epoch < self.n_epochs:
             d = OrderedDict(id=self.client_id)
             avg_loss = AverageMeter()
             avg_cel = AverageMeter()
@@ -281,7 +268,7 @@ class MOONClient(BaseClient):
 
                 contrast_loss = scl.mean()
                 cel = losses[0].mean()
-                loss = cel + self.alpha * scl
+                loss = cel + self.mu * scl
                 loss.backward()
                 self.optimizer.step()
 
@@ -302,11 +289,10 @@ class MOONClient(BaseClient):
         return self.model.state_dict()
 
 
-class PersonalizedClient(BaseClient):
-    def __init__(self, client_id, train_loader, test_loader, model, device, batch_size, lr, opt, epochs, batches, pk):
-        super(PersonalizedClient, self).__init__(client_id, train_loader, test_loader,
-                                                 model, device, batch_size, lr, opt, epochs, batches)
-        self.personalized_key = pk
+class PartialFLClient(BaseClient):
+    def __init__(self, client_id, train_loader, test_loader, model, args):
+        super(PartialFLClient, self).__init__(client_id, train_loader, test_loader, model, args)
+        self.personalized_key = args.pk
 
     def receive_global_model(self, global_state_dict):
         local_state_dict = self.model.state_dict()

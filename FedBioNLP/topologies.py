@@ -1,8 +1,8 @@
 import networkx as nx
 import random
 import numpy as np
-from FedBioNLP import pairs2matrix, get_degree_spectral_gap
-from FedBioNLP import plot_bandwidth
+from .utils.graph_utils import pairs2matrix, get_degree_spectral_gap
+from .utils.plot_utils import plot_bandwidth
 
 random.seed(66)
 

@@ -32,22 +32,14 @@ def plot_heatmap(name_list):
     plt.show()
 
 
-def plot_dirichlet(distributions, dataset, y_ticks=None):
-    fig, ax = plt.subplots(figsize=(8, 6))
-    n, c = distributions.shape[0], distributions.shape[1]
-    distributions_tran = distributions.transpose()
+def plot_class_samples(mtx):
+    n, c = mtx.shape[0], mtx.shape[1]
+    distributions_tran = mtx.transpose()
     s = 0
     for j in range(c):
         plt.barh(range(n), distributions_tran[j], left=s)
         s += distributions_tran[j]
-    plt.xlabel('number of false/true samples', fontsize='x-large')
-    if y_ticks is None:
-        y_ticks = np.arange(n)
-    plt.yticks(ticks=np.arange(n), labels=y_ticks)
-    label_y = ax.get_yticklabels()
-    plt.setp(label_y, rotation=45, horizontalalignment='right')
-    # plt.ylabel('Client', fontsize='x-large')
-    # plt.title(f'{chr(946)}={beta}')
+    plt.xlabel('number of class samples')
     plt.show()
 
 

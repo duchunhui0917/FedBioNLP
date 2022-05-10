@@ -1,11 +1,12 @@
 from torchvision import datasets as tv_datasets
 from torchvision import transforms
-from FedBioNLP.utils.fl_utils import generate_idxes_dirichlet, generate_idxes_kmeans, generate_idxes_group
 import h5py
 import json
-from FedBioNLP.tokenizers import *
-from FedBioNLP.datasets import *
-from FedBioNLP.models import *
+import numpy as np
+from .tokenizers import *
+from .datasets import *
+from .models import *
+from .utils.fl_utils import generate_idxes_dirichlet, generate_idxes_kmeans, generate_idxes_group
 
 logger = logging.getLogger(os.path.basename(__file__))
 

@@ -2,7 +2,7 @@ from FedBioNLP.processors import process_dataset
 import argparse
 from FedBioNLP import set_seed
 import os
-from FedBioNLP import plot_dirichlet
+from FedBioNLP import plot_class_samples
 from FedBioNLP import sta_dis
 
 os.path.expanduser('~/FedBioNLP')
@@ -65,11 +65,11 @@ doc_index = test_dataset.doc_index
 logging.info('client train distribution')
 distributions = sta_dis(train_datasets, n_classes)
 y_ticks = args.dataset_name.split('*')
-plot_dirichlet(distributions, args.dataset_name, y_ticks=y_ticks)
+plot_class_samples(distributions)
 
 logging.info('train test distribution')
 distributions = sta_dis([train_dataset, test_dataset], n_classes)
-plot_dirichlet(distributions, args.dataset_name)
+plot_class_samples(distributions)
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 

@@ -5,10 +5,11 @@ from transformers import AutoModelForTokenClassification
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 from torch import nn
 from transformers import AutoModel, AutoModelForMaskedLM
-from FedBioNLP.utils.GCN_utils import GraphConvolution, LSR
-from FedBioNLP.tokenizers import *
-from FedBioNLP.datasets import *
+from utils.GCN_utils import GraphConvolution, LSR
 import logging
+import os
+from .tokenizers import *
+from .datasets import *
 
 logger = logging.getLogger(os.path.basename(__file__))
 

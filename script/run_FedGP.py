@@ -1,12 +1,15 @@
+import json
+import sys
+
+sys.path.append('..')
+
 import argparse
 import datetime
-from FedBioNLP.models import *
 from FedBioNLP.systems import *
-from FedBioNLP.processors import process_dataset
-from FedBioNLP.utils.plot_utils import plot_dirichlet
-from FedBioNLP.utils.status_utils import status_distribution
-from FedBioNLP.utils.common_utils import init_log
+from FedBioNLP import process_dataset, plot_class_samples, status_mtx, init_log, set_seed
+import warnings
 
+warnings.filterwarnings('ignore')
 parser = argparse.ArgumentParser()
 
 # control hyperparameters
@@ -14,7 +17,7 @@ parser.add_argument('--load', default=False)
 parser.add_argument('--train', default=True)
 
 # FL hyperparameters
-parser.add_argument('--dataset_name', type=str, default='AIMed_1|2*PGR_2797',
+parser.add_argument('--dataset_name', type=str, default='AIMed_1|2*AIMed_2|2_balance',
                     choices=['MNIST', 'CIFAR10', 'CIFAR100',
                              '20news', 'agnews', 'sst_2', 'sentiment140',
                              'GAD', 'EU-ADR', 'PGR_Q1', 'PGR_Q2', 'CoMAGC', 'PolySearch',
@@ -39,7 +42,7 @@ parser.add_argument('--centralized', default=False)
 parser.add_argument('--personalized', default=True)
 parser.add_argument('--aggregate_method', default='equal',
                     choices=['equal', 'sample', 'attention'])
-parser.add_argument('--layers', default='embedding*layer.0*layer.1*layer.2*layer.3*layer.4*layer.5*classifier')
+parser.add_argument('--layers', default='.*embedding*layer.0*layer.1*layer.2*layer.3*layer.4*layer.5*classifier')
 # parser.add_argument('--layers', default='.')
 
 
@@ -55,7 +58,7 @@ parser.add_argument('--n_epochs', default=1)
 parser.add_argument('--n_batches', default=0)
 parser.add_argument('--opt', default='Adam',
                     choices=['SGD', 'Adam', 'WPOptim'])
-parser.add_argument('--batch_size', default=32)
+parser.add_argument('--batch_size', default=[24, 8])
 parser.add_argument('--max_seq_length', default=384)
 
 
@@ -63,9 +66,9 @@ def run():
     base_dir = os.path.expanduser('~/FedBioNLP')
     set_seed(2)
     model_name = args.model_name.replace('/', '_')
-    ckpt = f'ckpt/FedGP/{args.dataset_name}_{model_name}'
-    ckpt = os.path.join(base_dir, ckpt)
-    log_file = f'log/FedGP/{args.dataset_name}_{model_name}_{datetime.datetime.now():%y-%m-%d %H:%M}.log'
+    ckpt = f'ckpt/{args.alg}/{args.dataset_name}_{model_name}'
+    args.ckpt = os.path.join(base_dir, ckpt)
+    log_file = f'log/{args.alg}/{args.dataset_name}_{model_name}_{datetime.datetime.now():%y-%m-%d %H:%M}.log'
     log_file = os.path.join(base_dir, log_file)
     init_log(log_file)
 
@@ -73,58 +76,48 @@ def run():
                           max_seq_length=args.max_seq_length)
     client_ids, train_datasets, test_datasets, train_dataset, test_dataset, model = res
     n_classes = train_dataset.n_classes
-    doc_index = test_dataset.doc_index
 
-    distributions = status_distribution([train_dataset, test_dataset], n_classes)
-    plot_dirichlet(distributions, args.dataset_name)
+    mtx, mtx_ = status_mtx(train_datasets, n_classes)
+    plot_class_samples(mtx)
+    mtx = json.dumps(mtx.tolist())
+    logger.info(f'clients train class samples\n{mtx}')
 
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    mtx, mtx_ = status_mtx([train_dataset, test_dataset], n_classes)
+    plot_class_samples(mtx)
+    mtx = json.dumps(mtx.tolist())
+    logger.info(f'train test class samples\n{mtx}')
+
     if args.alg == 'centralized':
-        cs = CentralizedSystem(client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                               model, device, ckpt,
-                               n_iterations=args.n_iterations, n_epochs=args.n_epochs, n_batches=args.n_batches,
-                               lr=args.lr, opt=args.opt,
-                               aggregate_method=args.aggregate_method, batch_size=args.batch_size)
+        system = CentralizedSystem
     elif args.alg == 'FedAvg':
-        cs = FedAvgSystem(client_ids, train_datasets, test_datasets, train_dataset, test_dataset, model, device, ckpt,
-                          n_iterations=args.n_iterations, lr=args.lr, n_epochs=args.n_epochs, n_batches=args.n_batches,
-                          opt=args.opt, aggregate_method=args.aggregate_method, batch_size=args.batch_size,
-                          sm=args.sm, cm=args.cm, centralized=args.centralized, personalized=args.personalized,
-                          layers=args.layers)
+        system = FedAvgSystem
     elif args.alg == 'FedProx':
-        cs = FedProxSystem(client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
-                           model, device, args.mu, ckpt,
-                           n_iterations=args.n_iterations, lr=args.lr, n_epochs=args.n_epochs, n_batches=args.n_batches,
-                           opt=args.opt, aggregate_method=args.aggregate_method, batch_size=args.batch_size,
-                           sm=args.sm, cm=args.cm, centralized=args.centralized, personalized=args.personalized,
-                           layers=args.layers)
+        system = FedProxSystem
+    elif args.alg == 'MOON':
+        system = MOONSystem
     elif args.alg == 'FedGS':
-        cs = FedGSSystem(client_ids, train_datasets, test_datasets, train_dataset, test_dataset, model, device, ckpt,
-                         n_iterations=args.n_iterations, n_epochs=args.n_epochs, n_batches=args.n_batches,
-                         lr=args.lr, opt=args.opt,
-                         aggregate_method=args.aggregate_method, batch_size=args.batch_size,
-                         sm=args.sm, cm=args.cm, centralized=args.centralized, personalized=args.personalized,
-                         layers=args.layers)
+        system = FedGSSystem
     elif args.alg == 'FedGP':
-        cs = FedGPSystem(client_ids, train_datasets, test_datasets, train_dataset, test_dataset, model, device, ckpt,
-                         n_iterations=args.n_iterations, n_epochs=args.n_epochs, n_batches=args.n_batches,
-                         lr=args.lr, opt=args.opt,
-                         aggregate_method=args.aggregate_method, batch_size=args.batch_size,
-                         sm=args.sm, cm=args.cm, centralized=args.centralized, personalized=args.personalized,
-                         layers=args.layers)
+        system = FedGPSystem
+    elif args.alg == 'HarmoFL':
+        system = HarmoFLSystem
+    elif args.alg == 'PartialFL':
+        system = PartialFLSystem
     else:
         raise NotImplementedError
 
+    s = system(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+
     if args.load:
         print(ckpt)
-        cs.load(ckpt)
+        s.load(ckpt)
 
     if args.train:
-        cs.run()
+        s.run()
 
-    cs.test_model()
-    for test_loader in cs.test_loaders:
-        cs.test_model(data_loader=test_loader)
+    s.test_model()
+    for test_loader in s.test_loaders:
+        s.test_model(data_loader=test_loader)
 
 
 args = parser.parse_args()
