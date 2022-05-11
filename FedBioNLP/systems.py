@@ -7,7 +7,7 @@ from .utils.status_utils import tensor_cos_sim
 logger = logging.getLogger(os.path.basename(__file__))
 
 
-class BaseSystem(object):
+class Base(object):
     def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
         self.n_samples = [len(val) for val in train_datasets.values()]
         self.n_clients = len(train_datasets)
@@ -106,9 +106,9 @@ class BaseSystem(object):
         self.model = copy.deepcopy(model)
 
 
-class CentralizedSystem(BaseSystem):
+class Centralized(Base):
     def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
-        super(CentralizedSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+        super(Centralized, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
         self.client = BaseClient(0, self.train_loader, self.test_loader, model, args)
 
     def run(self, m='f1'):
@@ -130,9 +130,9 @@ class CentralizedSystem(BaseSystem):
             logger.info(f'best {m}: {self.g_best_metric:.4f}')
 
 
-class FedAvgSystem(BaseSystem):
+class FedAvg(Base):
     def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
-        super(FedAvgSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+        super(FedAvg, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
         self.aggregate_method = args.aggregate_method
 
         self.clients = [
@@ -256,9 +256,9 @@ class FedAvgSystem(BaseSystem):
         return weights
 
 
-class FedProxSystem(FedAvgSystem):
+class FedProx(FedAvg):
     def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
-        super(FedProxSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+        super(FedProx, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
 
         self.clients = [
             FedProxClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
@@ -266,9 +266,9 @@ class FedProxSystem(FedAvgSystem):
         ]
 
 
-class HarmoFLSystem(FedAvgSystem):
+class HarmoFL(FedAvg):
     def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
-        super(HarmoFLSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+        super(HarmoFL, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
         self.perturbation = args.perturbation
         self.clients = [
             HarmoFLClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
@@ -276,9 +276,9 @@ class HarmoFLSystem(FedAvgSystem):
         ]
 
 
-class MOONSystem(FedAvgSystem):
+class MOON(FedAvg):
     def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
-        super(MOONSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+        super(MOON, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
 
         self.clients = [
             MOONClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
@@ -286,9 +286,9 @@ class MOONSystem(FedAvgSystem):
         ]
 
 
-class PartialFLSystem(FedAvgSystem):
+class PartialFL(FedAvg):
     def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
-        super(PartialFLSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+        super(PartialFL, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
 
         self.clients = [
             PartialFLClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
@@ -296,9 +296,19 @@ class PartialFLSystem(FedAvgSystem):
         ]
 
 
-class FedGSSystem(FedAvgSystem):
+class pFedMe(FedAvg):
     def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
-        super(FedGSSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+        super(pFedMe, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+
+        self.clients = [
+            pFedMeClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
+            for client_id in range(self.n_clients)
+        ]
+
+
+class FedGS(FedAvg):
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
+        super(FedGS, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
         self.test_metrics = [0 for _ in range(self.n_clients)]
 
         self.clients = [
@@ -364,9 +374,9 @@ def reshape_to_matrix(x):
     return x, shape
 
 
-class FedGPSystem(FedGSSystem):
+class FedGP(FedGS):
     def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
-        super(FedGPSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+        super(FedGP, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
 
     def update_personal_grad_dicts(self):
         for i in range(self.n_clients):
@@ -396,9 +406,9 @@ class FedGPSystem(FedGSSystem):
                     self.personal_grad_dicts[i][j][key] = torch.FloatTensor(x2)
 
 
-class SoloSystem(BaseSystem):
+class Solo(Base):
     def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
-        super(SoloSystem, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+        super(Solo, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
         self.clients = [
             BaseClient(client_id, train_datasets[client_id], test_datasets[client_id], model, args)
             for client_id in range(self.n_clients)
@@ -432,10 +442,10 @@ class SoloSystem(BaseSystem):
         return metrics
 
 
-class DFLSystem(BaseSystem):
+class DFL(Base):
     def __init__(self, client_ids, train_datasets, test_datasets, model, iterations, lr,
                  pairs=None, *args, **kwargs):
-        super(DFLSystem, self).__init__(client_ids, train_datasets[0].n_classes, model, iterations, lr)
+        super(DFL, self).__init__(client_ids, train_datasets[0].n_classes, model, iterations, lr)
         if pairs is None:
             self.pairs = [(i, j) for i in range(self.n_clients) for j in range(i)]
         else:
@@ -494,11 +504,11 @@ class DFLSystem(BaseSystem):
                 param.data += params[c][idx] / self.n_clients
 
 
-class ServerSystem(BaseSystem):
+class Server(Base):
     def __init__(self, client_ids, train_datasets, test_dataset, server_dataset,
                  model, iterations, lr, selected_idxes=None, alg='FedAvg',
                  *args, **kwargs):
-        super(ServerSystem, self).__init__(test_dataset, client_ids, model, device, **kwargs)
+        super(Server, self).__init__(test_dataset, client_ids, model, device, **kwargs)
 
         if selected_idxes is None:
             self.selected_idxes = [list(range(self.n_clients)) for _ in range(self.iterations)]

@@ -16,8 +16,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--load', default=False)
 parser.add_argument('--train', default=True)
 
-# FL hyperparameters
-parser.add_argument('--dataset_name', type=str, default='AIMed_1|2*AIMed_2|2_balance',
+# common FL hyperparameters
+parser.add_argument('--dataset_name', type=str, default='AIMed_1|2*AIMed_2|2_label_reverse',
                     choices=['MNIST', 'CIFAR10', 'CIFAR100',
                              '20news', 'agnews', 'sst_2', 'sentiment140',
                              'GAD', 'EU-ADR', 'PGR_Q1', 'PGR_Q2', 'CoMAGC', 'PolySearch',
@@ -27,15 +27,11 @@ parser.add_argument('--dataset_name', type=str, default='AIMed_1|2*AIMed_2|2_bal
                              'squad_1.1',
                              'cnn_dailymail', 'cornell_movie_dialogue'
                              ])
-parser.add_argument('--alg', default='FedGP',
-                    choices=['centralized', 'SOLO', 'server', 'FedAvg', 'FedProx', 'MOON', 'PersonalizedFL',
-                             'FedGP', 'FedGS'])
+parser.add_argument('--alg', type=str, default='pFedMe')
 parser.add_argument('--split_type', default='idx_split',
                     choices=['centralized', 'idx_split', 'label_shift', 'feature_shift'])
 parser.add_argument('--beta', type=int, default=0.5)
 parser.add_argument('--n_clients', type=int, default=1)
-parser.add_argument('--mu', type=float, default=1)
-parser.add_argument('--temperature', type=float, default=0.5)
 parser.add_argument('--sm', default=0)
 parser.add_argument('--cm', default=0)
 parser.add_argument('--centralized', default=False)
@@ -45,6 +41,14 @@ parser.add_argument('--aggregate_method', default='equal',
 parser.add_argument('--layers', default='.*embedding*layer.0*layer.1*layer.2*layer.3*layer.4*layer.5*classifier')
 # parser.add_argument('--layers', default='.')
 
+# for FedProx, MOON, pFedMe
+parser.add_argument('--mu', type=float, default=1)
+# for MOON
+parser.add_argument('--temperature', type=float, default=0.5)
+# for pFedMe
+parser.add_argument('--n_inner_loops', type=int, default=4)
+# for PartialFL, FedMatch
+parser.add_argument('--pk', type=str, default='classifier')
 
 # training hyperparameters
 parser.add_argument('--lr', type=float, default=1e-5)
@@ -55,10 +59,10 @@ parser.add_argument('--model_name', type=str, default='distilbert-base-cased',
                              'dmis-lab/biobert-v1.1'])
 parser.add_argument('--n_iterations', type=int, default=50)
 parser.add_argument('--n_epochs', default=1)
-parser.add_argument('--n_batches', default=0)
+parser.add_argument('--n_batches', default=25)
 parser.add_argument('--opt', default='Adam',
                     choices=['SGD', 'Adam', 'WPOptim'])
-parser.add_argument('--batch_size', default=[24, 8])
+parser.add_argument('--batch_size', default=[32, 32])
 parser.add_argument('--max_seq_length', default=384)
 
 
@@ -88,21 +92,25 @@ def run():
     logger.info(f'train test class samples\n{mtx}')
 
     if args.alg == 'centralized':
-        system = CentralizedSystem
+        system = Centralized
     elif args.alg == 'FedAvg':
-        system = FedAvgSystem
+        system = FedAvg
     elif args.alg == 'FedProx':
-        system = FedProxSystem
+        system = FedProx
     elif args.alg == 'MOON':
-        system = MOONSystem
+        system = MOON
     elif args.alg == 'FedGS':
-        system = FedGSSystem
+        system = FedGS
     elif args.alg == 'FedGP':
-        system = FedGPSystem
+        system = FedGP
     elif args.alg == 'HarmoFL':
-        system = HarmoFLSystem
+        system = HarmoFL
     elif args.alg == 'PartialFL':
-        system = PartialFLSystem
+        system = PartialFL
+    elif args.alg == 'FedMatch':
+        system = PartialFL
+    elif args.alg == 'pFedMe':
+        system = pFedMe
     else:
         raise NotImplementedError
 

@@ -163,9 +163,9 @@ class FedProxClient(BaseClient):
     def train_model(self):
         global_model = copy.deepcopy(self.model)
         global_model = nn.DataParallel(global_model)
-        global_model.to(self.device)
+        global_model.cuda()
         model = nn.DataParallel(self.model)
-        model.to(self.device)
+        model.cuda()
 
         for epoch in range(self.n_epochs):
             d = OrderedDict(id=self.client_id)
@@ -183,15 +183,13 @@ class FedProxClient(BaseClient):
             for i, data in enumerate(t):
                 self.optimizer.zero_grad()
                 inputs, labels = data
-                inputs, labels = [x.to(self.device) for x in inputs], [x.to(self.device) for x in labels]
+                inputs, labels = [x.cuda() for x in inputs], [x.cuda() for x in labels]
                 nl = 0
                 count = 0
 
                 for (name1, param1), (name2, param2) in zip(model.named_parameters(),
                                                             global_model.named_parameters()):
-                    if 'backbone' in name1:
-                        nl = (nl * count + torch.norm(param1 - param2, 2)) / (count + 1)
-                    # norm_loss = (norm_loss * count + torch.norm(param1, 1)) / (count + 1)
+                    nl = (nl * count + torch.norm(param1 - param2, 2)) / (count + 1)
                     count += 1
                 features, logits, losses = model(inputs, labels)
                 cel = losses[0].mean()
@@ -217,6 +215,84 @@ class FedProxClient(BaseClient):
         return self.model.state_dict()
 
 
+class pFedMeClient(BaseClient):
+    def __init__(self, client_id, train_dataset, test_dataset, model, args):
+        super(pFedMeClient, self).__init__(client_id, train_dataset, test_dataset, model, args)
+        self.mu = args.mu
+        self.n_inner_loops = args.n_inner_loops
+
+    def train_model(self):
+        # for regularization
+        global_model = copy.deepcopy(self.model)
+        global_model = nn.DataParallel(global_model)
+        global_model.cuda()
+        # for obtaining gradients
+        local_model = copy.deepcopy(self.model)
+        if self.opt == 'Adam':
+            local_optimizer = optim.Adam(filter(lambda p: p.requires_grad, local_model.parameters()), lr=self.lr)
+        elif self.opt == 'SGD':
+            local_optimizer = optim.SGD(filter(lambda p: p.requires_grad, self.model.parameters()), lr=self.lr,
+                                        weight_decay=1e-5, momentum=0.9)
+        else:
+            raise Exception("Invalid optimizer. Must be 'SGD' or 'Adam'.")
+        local_model = nn.DataParallel(local_model)
+        local_model.cuda()
+
+        model = nn.DataParallel(self.model)
+        model.cuda()
+
+        for epoch in range(self.n_epochs):
+            d = OrderedDict(id=self.client_id)
+            avg_loss = AverageMeter()
+            avg_cel = AverageMeter()
+            avg_nl = AverageMeter()
+            avg_metrics = None
+
+            if self.n_batches == 0:
+                t = tqdm(self.train_loader, ncols=0)
+            else:
+                ite_train_loader = BatchIterator(self.n_batches, self.train_loader)
+                t = tqdm(ite_train_loader, ncols=0)
+
+            for i, data in enumerate(t):
+                inputs, labels = data
+                inputs, labels = [x.cuda() for x in inputs], [x.cuda() for x in labels]
+
+                for j in range(self.n_inner_loops):
+                    local_optimizer.zero_grad()
+                    nls = []
+                    for (name1, param1), (name2, param2) in zip(local_model.named_parameters(),
+                                                                global_model.named_parameters()):
+                        nls.append(torch.norm(param1 - param2, 2))
+                    nl = sum(nls) / len(nls)
+                    features, logits, losses = local_model(inputs, labels)
+                    cel = losses[0].mean()
+                    loss = cel + self.mu * nl
+                    loss.backward()
+                    local_optimizer.step()
+
+                    avg_loss.update(loss.item(), 1)
+                    avg_cel.update(cel.item(), 1)
+                    avg_nl.update(nl.item(), 1)
+                    d.update({'loss': avg_loss.avg, 'cel': avg_cel.avg, 'nl': avg_nl.avg})
+
+                    metrics = self.train_dataset.metric(inputs, labels, logits, test_mode=False)
+                    if avg_metrics is None:
+                        avg_metrics = {key: AverageMeter() for key in metrics.keys()}
+                    for key, val in metrics.items():
+                        avg_metric = avg_metrics[key]
+                        avg_metric.update(val, 1)
+                        d.update({key: avg_metric.avg})
+                    t.set_postfix(d)
+
+                # update model by the gradient obtained by local model
+                for param, local_param in zip(model.parameters(), local_model.parameters()):
+                    param.data -= self.lr * (param.data - local_param.data)
+                    local_param.data = param.data
+        self.model.to('cpu')
+        return self.model.state_dict()
+
+
 class MOONClient(BaseClient):
     def __init__(self, client_id, train_dataset, test_dataset, model, args):
         super(MOONClient, self).__init__(client_id, train_dataset, test_dataset, model, args)
@@ -227,15 +303,15 @@ class MOONClient(BaseClient):
     def train_model(self):
         global_model = copy.deepcopy(self.model)
         global_model = nn.DataParallel(global_model)
-        global_model.to(self.device)
+        global_model.cuda()
 
         pre_model = copy.deepcopy(self.pre_model)
         pre_model = nn.DataParallel(pre_model)
-        pre_model.to(self.device)
+        pre_model.cuda()
 
-        model = self.model.to(self.device)
+        model = self.model.cuda()
         model = nn.DataParallel(model)
-        model.to(self.device)
+        model.cuda()
 
         epoch = 0
         while epoch < self.n_epochs:
@@ -252,7 +328,7 @@ class MOONClient(BaseClient):
                 self.optimizer.zero_grad()
 
                 inputs, labels = data
-                inputs, labels = [x.to(self.device) for x in inputs], [x.to(self.device) for x in labels]
+                inputs, labels = [x.cuda() for x in inputs], [x.cuda() for x in labels]
 
                 features, logits, losses = model(inputs, labels)
                 global_features, global_logits, global_losses = global_model(inputs, labels)
