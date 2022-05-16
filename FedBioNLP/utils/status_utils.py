@@ -94,6 +94,7 @@ def visualize_features(features, labels, style=None, mode=None):
             sns.scatterplot(X_features[:, 0], X_features[:, 1], hue=labels, style=style, palette=palette, s=8)
         else:
             sns.scatterplot(X_features[:, 0], X_features[:, 1], hue=labels, palette=palette, s=8)
+        plt.title(f'layer {layer}')
         plt.show()
 
 
@@ -113,7 +114,10 @@ def tensor_cos_sim(tensor1, tensor2):
     sim22 = torch.dot(tensor2, tensor2)
     sim12 = torch.dot(tensor1, tensor2)
     if sim11 != 0 and sim22 != 0:
-        cosine_sim = float(sim12 / (torch.sqrt(sim11) * torch.sqrt(sim22)))
+        # cosine_sim = sim12
+        # cosine_sim = sim12 / torch.sqrt(sim11 * sim22)
+        # cosine_sim = torch.norm(tensor1, 2)
+        cosine_sim = torch.norm(tensor1 - tensor2, 2)
     else:
         cosine_sim = 0
     return cosine_sim

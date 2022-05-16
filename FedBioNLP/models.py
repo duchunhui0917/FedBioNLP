@@ -4,12 +4,14 @@ from torchvision import models
 from transformers import AutoModelForTokenClassification
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 from torch import nn
-from transformers import AutoModel, AutoModelForMaskedLM
+from transformers import AutoModel, AutoModelForMaskedLM, AutoConfig
 from utils.GCN_utils import GraphConvolution, LSR
 import logging
 import os
+import copy
 from .tokenizers import *
 from .datasets import *
+from .modules import DistilBertForMaskedLM, MMDLoss, GRL
 
 logger = logging.getLogger(os.path.basename(__file__))
 
@@ -141,25 +143,6 @@ class SeqClsRNN(nn.Module):
     pass
 
 
-class MaskedLMBERT(nn.Module):
-    def __init__(self, model_name):
-        super(MaskedLMBERT, self).__init__()
-        self.model = AutoModelForMaskedLM.from_pretrained(model_name)
-
-    def forward(self, inputs, labels):
-        inputs, mask = inputs
-        outputs = self.model(inputs, labels=labels, output_hidden_states=True)
-        hidden_states = outputs.hidden_states
-        logits = outputs.logits
-        loss = outputs.loss
-
-        score, pred_labels = logits.max(-1)
-        acc = (pred_labels == labels).sum() / mask.size(0)
-        mask_acc = ((pred_labels == labels) * mask).sum() / mask.sum()
-
-        return hidden_states, logits, [loss]
-
-
 class SequenceClassificationBert(nn.Module):
     def __init__(self, model_name, output_dim):
         super(SequenceClassificationBert, self).__init__()
@@ -204,8 +187,13 @@ class REModel(nn.Module):
         self.tokenizer = re_tokenizer
         self.dataset = REDataset
 
-        # for param in self.encoder.parameters():
-        #     param.requires_grad = False
+    def freeze_params(self):
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+
+    def activate_params(self):
+        for param in self.encoder.parameters():
+            param.requires_grad = True
 
     @staticmethod
     def max_pooling(sequence, e_mask):
@@ -244,12 +232,23 @@ class REModel(nn.Module):
 
 
 class REGCNModel(REModel):
-    def __int__(self, model_name, output_dim, num_gcn_layers=1):
-        super(REGCNModel, self).__int__(model_name, output_dim)
+    def __init__(self, model_name, output_dim):
+        super(REGCNModel, self).__init__(model_name, output_dim)
         gcn_layer = GraphConvolution(768, 768)
-        self.gcn_layers = nn.ModuleList([copy.deepcopy(gcn_layer) for _ in range(num_gcn_layers)])
+        self.gcn_layers = nn.ModuleList([copy.deepcopy(gcn_layer) for _ in range(0)])
         self.tokenizer = re_dep_tokenizer
         self.dataset = REGCNDataset
+        # self.encoder = AutoModelForMaskedLM.from_pretrained(model_name)
+        config = AutoConfig.from_pretrained(model_name)
+        self.encoder = DistilBertForMaskedLM(config)
+        self.patch = nn.Sequential(
+            nn.Linear(768, 768),
+            nn.ReLU(),
+            nn.Linear(768, 768),
+            nn.ReLU()
+        )
+        for param in self.encoder.parameters():
+            param.requires_grad = True
 
     @staticmethod
     def valid_filter(sequence, valid_ids):
@@ -272,11 +271,16 @@ class REGCNModel(REModel):
         return valid_output
 
     def forward(self, inputs, labels):
-        input_ids, input_mask, valid_ids, e1_mask, e2_mask, dep_matrix = inputs
+        input_ids, input_mask, valid_ids, e1_mask, e2_mask, dep_matrix, mlm_input_ids = inputs
         labels = labels[0]
-        outputs = self.encoder(input_ids, attention_mask=input_mask, output_hidden_states=True)
+        outputs = self.encoder(input_ids, labels=mlm_input_ids, attention_mask=input_mask, output_hidden_states=True)
         hidden_states = outputs.hidden_states
-        encoder_output = outputs.last_hidden_state  # (B, L, H)
+        encoder_output = hidden_states[-1]  # (B, L, H)
+        mlm_loss = outputs.loss
+
+        # # add patch
+        # path_outputs = self.patch(hidden_states[0])  # (B, L, H)
+        # encoder_output += path_outputs
 
         # filter valid output
         valid_output = self.valid_filter(encoder_output, valid_ids)  # (B, L, H)
@@ -296,9 +300,49 @@ class REGCNModel(REModel):
 
         # classifier
         logits = self.classifier(ent)  # (B, C)
-        loss = self.criterion(logits, labels)
+        ce_loss = self.criterion(logits, labels)
 
-        return hidden_states, logits, [loss]
+        loss = ce_loss + 0.1 * mlm_loss
+
+        return hidden_states, logits, [loss, ce_loss, mlm_loss]
+
+    # def forward(self, inputs, labels):
+    #     input_ids, input_mask, valid_ids, e1_mask, e2_mask, dep_matrix, mlm_input_ids = inputs
+    #     labels = labels[0]
+    #
+    #     outputs = self.encoder(input_ids, labels=mlm_input_ids, attention_mask=input_mask, output_hidden_states=True)
+    #     hidden_states = outputs.hidden_states
+    #     encoder_output = hidden_states[-1]  # (B, L, H)
+    #     mlm_loss = outputs.loss
+    #
+    #     # add patch
+    #     path_outputs = self.patch(hidden_states[0])  # (B, L, H)
+    #     encoder_output += path_outputs
+    #
+    #     # filter valid output
+    #     valid_output = self.valid_filter(encoder_output, valid_ids)  # (B, L, H)
+    #     valid_output = self.dropout(valid_output)
+    #
+    #     # gcn
+    #     gcn_output = valid_output
+    #     for gcn_layer in self.gcn_layers:
+    #         gcn_output = gcn_layer(gcn_output, dep_matrix)  # (B, L, H)
+    #     gcn_output = self.dropout(gcn_output)
+    #
+    #     # extract entity
+    #     e1_h = self.max_pooling(gcn_output, e1_mask)  # (B, H)
+    #     e2_h = self.max_pooling(gcn_output, e2_mask)  # (B, H)
+    #     ent = torch.cat([e1_h, e2_h], dim=-1)  # (B, 2H)
+    #     ent = self.dropout(ent)
+    #
+    #     # classifier
+    #     logits = self.classifier(ent)  # (B, C)
+    #     ce_loss = self.criterion(logits, labels)
+    #
+    #     alpha = 1
+    #     loss = mlm_loss
+    #
+    #     return hidden_states, logits, [mlm_loss]
 
 
 class RELatentGCNModel(REModel):
@@ -374,34 +418,6 @@ class REHorizonModel(REModel):
         return hidden_states, logits, [loss]
 
 
-class GRLFunc(torch.autograd.Function):
-    def __init__(self):
-        super(GRLFunc, self).__init__()
-
-    @staticmethod
-    def forward(ctx, x, lambda_):
-        ctx.save_for_backward(lambda_)
-        return x.view_as(x)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        lambda_, = ctx.saved_variables
-        grad_input = grad_output.clone()
-        return - lambda_ * grad_input, None
-
-
-class GRL(nn.Module):
-    def __init__(self, lambda_=0.):
-        super(GRL, self).__init__()
-        self.lambda_ = torch.tensor(lambda_)
-
-    def set_lambda(self, lambda_):
-        self.lambda_ = torch.tensor(lambda_)
-
-    def forward(self, x):
-        return GRLFunc.apply(x, self.lambda_)
-
-
 class REGRLModel(REModel):
     def __init__(self, model_name, output_dim):
         super(REGRLModel, self).__init__(model_name, output_dim)
@@ -444,69 +460,10 @@ class REGRLModel(REModel):
             return hidden_states, label_logits, [loss]
 
 
-class MMDLoss(nn.Module):
-    '''
-    计算源域数据和目标域数据的MMD距离
-    Params:
-    source: 源域数据（n * len(x))
-    target: 目标域数据（m * len(y))
-    kernel_mul:
-    kernel_num: 取不同高斯核的数量
-    fix_sigma: 不同高斯核的sigma值
-    Return:
-    loss: MMD loss
-    '''
-
-    def __init__(self, kernel_type='rbf', kernel_mul=2.0, kernel_num=5, fix_sigma=None, **kwargs):
-        super(MMDLoss, self).__init__()
-        self.kernel_num = kernel_num
-        self.kernel_mul = kernel_mul
-        self.fix_sigma = None
-        self.kernel_type = kernel_type
-
-    def guassian_kernel(self, source, target, kernel_mul, kernel_num, fix_sigma):
-        n_samples = int(source.size()[0]) + int(target.size()[0])
-        total = torch.cat([source, target], dim=0)
-        total0 = total.unsqueeze(0).expand(
-            int(total.size(0)), int(total.size(0)), int(total.size(1)))
-        total1 = total.unsqueeze(1).expand(
-            int(total.size(0)), int(total.size(0)), int(total.size(1)))
-        L2_distance = ((total0 - total1) ** 2).sum(2)
-        if fix_sigma:
-            bandwidth = fix_sigma
-        else:
-            bandwidth = torch.sum(L2_distance.data) / (n_samples ** 2 - n_samples)
-        bandwidth /= kernel_mul ** (kernel_num // 2)
-        bandwidth_list = [bandwidth * (kernel_mul ** i)
-                          for i in range(kernel_num)]
-        kernel_val = [torch.exp(-L2_distance / bandwidth_temp)
-                      for bandwidth_temp in bandwidth_list]
-        return sum(kernel_val)
-
-    def linear_mmd2(self, f_of_X, f_of_Y):
-        delta = f_of_X.float().mean(0) - f_of_Y.float().mean(0)
-        loss = delta.dot(delta.T)
-        return loss
-
-    def forward(self, source, target):
-        if self.kernel_type == 'linear':
-            return self.linear_mmd2(source, target)
-        elif self.kernel_type == 'rbf':
-            batch_size = int(source.size()[0])
-            kernels = self.guassian_kernel(
-                source, target, kernel_mul=self.kernel_mul, kernel_num=self.kernel_num, fix_sigma=self.fix_sigma)
-            XX = torch.mean(kernels[:batch_size, :batch_size])
-            YY = torch.mean(kernels[batch_size:, batch_size:])
-            XY = torch.mean(kernels[:batch_size, batch_size:])
-            YX = torch.mean(kernels[batch_size:, :batch_size])
-            loss = torch.mean(XX + YY - XY - YX)
-            return loss
-
-
 class RESCLModel(REModel):
     def __init__(self, model_name, output_dim):
         super(RESCLModel, self).__init__(model_name, output_dim)
-        self.Lambda = 0.5
+        self.Lambda = 1
         self.tau = 0.3
 
     def scl(self, ent, labels):
@@ -526,6 +483,7 @@ class RESCLModel(REModel):
                 equal[i][i] = 0
 
         cls = log_exp_cos * equal
+        cls = cls.sum(1).mean()
         return cls
 
     def forward(self, inputs, labels):

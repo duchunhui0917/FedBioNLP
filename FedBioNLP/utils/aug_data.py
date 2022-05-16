@@ -1,3 +1,4 @@
+import random
 import re
 import os
 import json
@@ -147,5 +148,26 @@ def aug_label_reverse(labels):
         if label == '0':
             aug_labels.append('1')
         elif label == '1':
+            aug_labels.append('0')
+    return aug_labels
+
+
+def aug_label_random(labels):
+    aug_labels = []
+    for label in labels:
+        if random.random() < 0.15:
+            aug_labels.append('1')
+        else:
+            aug_labels.append('0')
+    return aug_labels
+
+
+def aug_sent_len(texts, l):
+    aug_labels = []
+    for text in texts:
+        ls = text.split()
+        if len(ls) < l:
+            aug_labels.append('1')
+        else:
             aug_labels.append('0')
     return aug_labels

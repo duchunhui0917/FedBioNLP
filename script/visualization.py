@@ -1,50 +1,98 @@
 import os.path
 import numpy as np
 from FedBioNLP.processors import process_dataset
+from FedBioNLP.systems import Centralized
 import argparse
-from FedBioNLP import visualize_features, cmp_cosine_euclidean
 import pickle
+import logging
+import warnings
+import datetime
+from FedBioNLP import process_dataset, plot_class_samples, status_mtx, init_log, set_seed, visualize_features
 
-parser = argparse.ArgumentParser()
 base_dir = os.path.expanduser('~/FedBioNLP')
+
+warnings.filterwarnings('ignore')
+parser = argparse.ArgumentParser()
+
+# control hyperparameters
 parser.add_argument('--load_model', default=True)
-parser.add_argument('--load_rep', default=True)
-parser.add_argument('--alg', default='GRL')
-parser.add_argument('--dataset_name', default='AIMed_1|2*PGR_2797')
-parser.add_argument('--model_name', default='distilbert-base-cased',
-                    choices=['distilbert-base-cased',
+parser.add_argument('--load_rep', default=False)
+parser.add_argument('--vis_docs', default=False)
+parser.add_argument('--vis_labels', default=True)
+parser.add_argument('--mode', default='average')
+
+# common FL hyperparameters
+parser.add_argument('--dataset_name', type=str,
+                    default='AIMed',
+                    choices=['MNIST', 'CIFAR10', 'CIFAR100',
+                             '20news', 'agnews', 'sst_2', 'sentiment140',
+                             'GAD', 'EU-ADR', 'PGR_Q1', 'PGR_Q2', 'CoMAGC', 'PolySearch',
+                             'i2b2', 'i2b2_BIDMC', 'i2b2_Partners',
+                             'semeval_2010_task8',
+                             'wikiner', 'ploner',
+                             'squad_1.1',
+                             'cnn_dailymail', 'cornell_movie_dialogue'
+                             ])
+parser.add_argument('--alg', type=str, default='SCL')
+parser.add_argument('--split_type', default='idx_split',
+                    choices=['centralized', 'idx_split', 'label_shift', 'feature_shift'])
+parser.add_argument('--beta', type=int, default=0.5)
+parser.add_argument('--n_clients', type=int, default=1)
+parser.add_argument('--sm', default=0)
+parser.add_argument('--cm', default=0)
+parser.add_argument('--centralized', default=False)
+parser.add_argument('--personalized', default=True)
+parser.add_argument('--aggregate_method', default='equal',
+                    choices=['equal', 'sample', 'attention'])
+parser.add_argument('--layers',
+                    default='.*embedding*layer.0*layer.1*layer.2*layer.3*layer.4*layer.5*patch*gcn*classifier')
+# parser.add_argument('--layers', default='.')
+
+# for FedProx, MOON, pFedMe
+parser.add_argument('--mu', type=float, default=1)
+# for MOON
+parser.add_argument('--temperature', type=float, default=0.5)
+# for pFedMe
+parser.add_argument('--n_inner_loops', type=int, default=4)
+# for PartialFL, FedMatch
+parser.add_argument('--pk', type=str, default='classifier')
+# for ICFA
+parser.add_argument('--n_clusters', type=int, default=0)
+# for SCL
+parser.add_argument('--SCL', default=True)
+
+# training hyperparameters
+parser.add_argument('--lr', type=float, default=1e-5)
+parser.add_argument('--model_name', type=str, default='distilbert-base-cased',
+                    choices=['CNN',
+                             'distilbert-base-cased',
                              'bert-base-cased',
                              'dmis-lab/biobert-v1.1'])
-parser.add_argument('--mode', default='average', choices=['average', 'first', 'first_last', 'squeeze'])
-parser.add_argument('--batch_size', default=8)
-parser.add_argument('--GRL', default=False)
-parser.add_argument('--MaskedLM', default=False)
-parser.add_argument('--vis_docs', default=True)
-parser.add_argument('--vis_labels', default=False)
+parser.add_argument('--n_iterations', type=int, default=50)
+parser.add_argument('--n_epochs', default=1)
+parser.add_argument('--n_batches', default=0)
+parser.add_argument('--opt', default='Adam',
+                    choices=['SGD', 'Adam', 'WPOptim'])
+parser.add_argument('--batch_size', default=128)
+parser.add_argument('--max_seq_length', default=256)
+
 args = parser.parse_args()
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+model_name = args.model_name.replace('/', '_')
+ckpt = f'ckpt/{args.alg}/{args.dataset_name}_{model_name}.pth'
+args.ckpt = os.path.join(base_dir, ckpt)
+log_file = f'log/{args.alg}/{args.dataset_name}_{model_name}_{datetime.datetime.now():%y-%m-%d %H:%M}.log'
+log_file = os.path.join(base_dir, log_file)
+init_log(log_file)
 
-res = process_dataset(args.dataset_name,
-                      split_type='idx_split',
-                      model_name=args.model_name,
-                      GRL=args.GRL,
-                      MaskedLM=args.MaskedLM)
-clients, train_datasets, test_datasets, train_dataset, test_dataset, model = res
+_ = process_dataset(args.dataset_name, args.model_name, args.split_type, args.n_clients, args.max_seq_length, args)
+clients, train_datasets, test_datasets, train_dataset, test_dataset, model, res = _
 doc_index = test_dataset.doc_index
 
-model_name = args.model_name.replace('/', '_')
-ckpt_p = f'ckpt/centralized/{args.dataset_name}_{model_name}.pth'
-cos_p = f'grad_cos/centralized/{args.dataset_name}_{model_name}.json'
-ckpt = os.path.join(base_dir, ckpt_p)
-grad_cos = os.path.join(base_dir, cos_p)
-
-cs = CentralizedSystem(clients, train_datasets, test_datasets, train_dataset, test_dataset, model, device,
-                       ckpt, grad_cos,
-                       batch_size=args.batch_size)
+cs = Centralized(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
 if args.load_model:
-    cs.load(ckpt)
-    print(ckpt)
+    cs.load(args.ckpt)
+    print(args.ckpt)
     logging.info('model has been loaded')
 
 p = f'rep/{args.alg}/{args.dataset_name}_{model_name}.pkl'
@@ -63,15 +111,6 @@ else:
         pickle.dump(ls, f)
     print(rep)
     logging.info('pickle has been dumped')
-
-
-def cmp(pairs, all_layers=True):
-    i, j = pairs
-    if all_layers:
-        features_n = [x['features'] for x in ls]
-    else:
-        features_n = [x['features'][-1] for x in ls]
-    cmp_cosine_euclidean(features_n[i], features_n[j], mode=args.mode)
 
 
 def vis(nodes, all_layers=True):
@@ -101,4 +140,4 @@ def vis(nodes, all_layers=True):
 for x in ls:
     print(x['metric'])
 
-vis([0, 1])
+vis([0])

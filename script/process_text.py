@@ -3,7 +3,7 @@ import json
 import os
 import h5py
 import pandas as pd
-from FedBioNLP import aug_back_translate, aug_tfidf, aug_label_reverse
+from FedBioNLP import aug_back_translate, aug_tfidf, aug_label_reverse, aug_label_random, aug_sent_len
 from stanfordcorenlp import StanfordCoreNLP
 from tqdm import tqdm
 
@@ -102,7 +102,7 @@ def h52txt(file_name):
     hf.close()
 
 
-def bio_RE_txt2h5(file_name, aug_method=None, process=False):
+def bio_RE_txt2h5(file_name, aug_method=None, process=True):
     dir_name = file_name.split('_')[0]
 
     if aug_method:
@@ -194,6 +194,11 @@ def aug_text(file_name, aug_method='aug', mode='train', process=True):
         aug_texts = aug_tfidf(e_texts, dir_name)
     elif aug_method == 'label_reverse':
         aug_labels = aug_label_reverse(labels)
+    elif aug_method == 'label_random':
+        aug_labels = aug_label_random(labels)
+    elif aug_method == 'sent_len':
+        aug_labels = aug_sent_len(e_texts, 30)
+
     liens = []
     for aug_text, aug_label in zip(aug_texts, aug_labels):
         text = aug_text
@@ -286,30 +291,27 @@ def csv2tsv(name_list):
             df.to_csv(file_path, index=False, sep='\t', encoding='utf-8')
 
 
-# txt2h5(['GAD', 'EU-ADR', 'PGR_Q1'])
-# update_h5('semeval_2010_task8')
-# txt2h5(['PGR_Q1', 'PGR_Q2'])
-# sta_ht()
+# bio_RE_txt2h5('GAD', process=True)
+# bio_RE_txt2h5('EU-ADR', process=True)
+# bio_RE_txt2h5('CoMAGC', process=True)
+# bio_RE_txt2h5('PGR_Q1', process=True)
+# bio_RE_txt2h5('PGR_Q2', process=True)
 
-# csv2tsv(['HPRD50'])
+# bio_RE_txt2h5('AIMed', process=True)
+# bio_RE_txt2h5('BioInfer', process=True)
+# bio_RE_txt2h5('HPRD50', process=True)
+# bio_RE_txt2h5('IEPA', process=True)
+# bio_RE_txt2h5('LLL', process=True)
 
-# bio_RE_txt2h5('GAD')
-# bio_RE_txt2h5('EU-ADR')
-# bio_RE_txt2h5('CoMAGC')
-# bio_RE_txt2h5('PGR_Q1')
-# bio_RE_txt2h5('PGR_Q2')
-#
-# bio_RE_txt2h5('AIMed')
-# bio_RE_txt2h5('BioInfer')
-# bio_RE_txt2h5('HPRD50')
-# bio_RE_txt2h5('IEPA')
-# bio_RE_txt2h5('LLL')
-
-# bio_RE_txt2h5('LLL')
-bio_RE_txt2h5('AIMed_2|2', aug_method='back_translate', process=False)
+# bio_RE_txt2h5('AIMed_2|2', aug_method='back_translate', process=False)
 # bio_RE_txt2h5('AIMed_2|2', aug_method='label_reverse', process=False)
 # bio_RE_txt2h5('AIMed_2|2', aug_method='tfidf', process=False)
+# bio_RE_txt2h5('AIMed_2|2', aug_method='label_random', process=False)
+bio_RE_txt2h5('AIMed_2|2', aug_method='sent_len', process=False)
 
 # aug_text('AIMed_2|2', aug_method='back_translate', mode='test', process=False)
-
+# aug_text('AIMed_2|2', aug_method='label_random', mode='train', process=False)
+# aug_text('AIMed_1|2_balance', aug_method='label_reverse', mode='train', process=False)
+# aug_text('AIMed_2|2', aug_method='sent_len', mode='test', process=False)
 # h52txt('AIMed_2|2')
+# h52txt('AIMed_1|2_balance')

@@ -35,7 +35,7 @@ class Base(object):
                               for k, v in train_datasets.items()]
         self.test_loaders = [DataLoader(v, batch_size=self.default_batch_size)
                              for k, v in test_datasets.items()]
-        self.train_loader = DataLoader(train_dataset, batch_size=self.default_batch_size, shuffle=True, drop_last=True)
+        self.train_loader = DataLoader(train_dataset, batch_size=self.batch_size[0], shuffle=True, drop_last=True)
         self.test_loader = DataLoader(test_dataset, batch_size=self.default_batch_size)
         self.ite = 0
 
@@ -122,6 +122,7 @@ class Centralized(Base):
             # test
             metrics = self.test_model()[0]
             test_metric = metrics[m]
+            logger.info(f'current {m}: {test_metric:.4f}')
 
             if test_metric > self.g_best_metric:
                 torch.save(self.model.state_dict(), self.ckpt)
@@ -147,18 +148,17 @@ class FedAvg(Base):
         self.ckpts = [f'{self.ckpt}_{i}.pth' for i in range(self.n_clients)]
         self.layers = args.layers.split('*')
 
-        self.personal_model_dicts = [self.model.state_dict() for _ in range(self.n_clients)]
-        self.personal_grad_dicts = [[{} for _ in range(self.n_clients)] for _ in range(self.n_clients)]
-        self.cos_sims = {}
+        self.model_cos_sims = {}
+        self.grad_cos_sims = {}
 
     def run(self, m='f1'):
         for self.ite in range(self.n_iterations):
             logger.info(f'iteration: {self.ite}')
 
             # 1. distribute server model to all clients
-            global_param_dict = self.model.state_dict()
+            global_model_dict = self.model.state_dict()
             for client in self.clients:
-                client.receive_global_model(global_param_dict)
+                client.receive_global_model(global_model_dict)
 
             # 2. train client models
             model_dicts = []
@@ -167,9 +167,9 @@ class FedAvg(Base):
                 model_dicts.append(model_state_dict)
 
             # update gradient and compute gradient cosine similarity
-            self.get_personal_grad_dicts(model_dicts)
-            logger.info('compute gradient cosine similarity')
-            self.compute_cos_sims()
+            grad_dicts = self.get_grad_dicts(model_dicts)
+            logger.info('compute gradient and model cosine similarity')
+            self.compute_cos_sims(model_dicts, grad_dicts)
 
             # 3. aggregate into server model
             model_dict = self.get_global_model_dict(model_dicts)
@@ -178,12 +178,13 @@ class FedAvg(Base):
             # test and save models
             self.test_save_models(m)
 
-    def get_personal_grad_dicts(self, model_dicts):
+    def get_grad_dicts(self, model_dicts):
+        grad_dicts = [{} for _ in range(self.n_clients)]
         for i in range(self.n_clients):
-            for j in range(self.n_clients):
-                for key, val in self.model.state_dict().items():
-                    grad = self.personal_model_dicts[j][key] - model_dicts[j][key]
-                    self.personal_grad_dicts[i][j].update({key: grad})
+            for key, val in self.model.state_dict().items():
+                grad = val - model_dicts[i][key]
+                grad_dicts[i].update({key: grad})
+        return grad_dicts
 
     def get_global_model_dict(self, model_dicts):
         logger.info(f'aggregation weights all layers: {self.weights}')
@@ -229,23 +230,36 @@ class FedAvg(Base):
                 torch.save(self.clients[i].model.state_dict(), self.ckpts[i])
         logger.info(f'personal best {m}: {self.p_best_metric:.4f}')
 
-    def compute_cos_sims(self):
+    def compute_cos_sims(self, model_dicts, grad_dicts):
         for key in self.model.state_dict().keys():
-            self.cos_sims.update({key: np.zeros((self.n_clients, self.n_clients))})
+            self.model_cos_sims.update({key: np.zeros((self.n_clients, self.n_clients))})
+            self.grad_cos_sims.update({key: np.zeros((self.n_clients, self.n_clients))})
+
             for i in range(self.n_clients):
                 for j in range(self.n_clients):
-                    sim = tensor_cos_sim(self.personal_grad_dicts[i][i][key], self.personal_grad_dicts[i][j][key])
-                    self.cos_sims[key][i][j] = sim
+                    grad_sim = tensor_cos_sim(grad_dicts[i][key], grad_dicts[j][key])
+                    model_sim = tensor_cos_sim(model_dicts[i][key], model_dicts[j][key])
+                    self.grad_cos_sims[key][i][j] = grad_sim
+                    self.model_cos_sims[key][i][j] = model_sim
 
         for layer in self.layers:
             cos_sim = np.zeros((self.n_clients, self.n_clients))
             count = 0
-            for key, val in self.cos_sims.items():
+            for key, val in self.grad_cos_sims.items():
                 if layer in key:
                     cos_sim = (cos_sim * count + val) / (count + 1)
                     count += 1
             cos_sim = json.dumps(np.around(cos_sim, decimals=4).tolist())
-            logger.info(f'layer {layer} cosine similarity matrix\n{cos_sim}')
+            logger.info(f'layer {layer} gradient cosine similarity matrix\n{cos_sim}')
+
+            cos_sim = np.zeros((self.n_clients, self.n_clients))
+            count = 0
+            for key, val in self.model_cos_sims.items():
+                if layer in key:
+                    cos_sim = (cos_sim * count + val) / (count + 1)
+                    count += 1
+            cos_sim = json.dumps(np.around(cos_sim, decimals=4).tolist())
+            logger.info(f'layer {layer} model cosine similarity matrix\n{cos_sim}')
 
     def compute_weights(self):
         if self.aggregate_method == 'sample':
@@ -306,6 +320,64 @@ class pFedMe(FedAvg):
         ]
 
 
+class ICFA(FedAvg):
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
+        super(ICFA, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+
+        self.clients = [
+            ICFAClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
+            for client_id in range(self.n_clients)
+        ]
+        self.n_clusters = args.n_clusters
+        self.cluster_model_dicts = [model.state_dict() for model in args.cluster_models]
+
+    def run(self, m='f1'):
+        for self.ite in range(self.n_iterations):
+            logger.info(f'iteration: {self.ite}')
+
+            # 1. distribute cluster models to all clients
+            for client in self.clients:
+                client.receive_cluster_models(self.cluster_model_dicts)
+
+            # 2. train client models
+            model_dicts = []
+            clusters = []
+            for i, client in enumerate(self.clients):
+                model_dict, cluster = client.train_model()
+                model_dicts.append(model_dict)
+                clusters.append(cluster)
+            logger.info(f'cluster {clusters}')
+
+            # update gradient and compute gradient cosine similarity
+            grad_dicts = self.get_grad_dicts(model_dicts)
+            logger.info('compute gradient and model cosine similarity')
+            self.compute_cos_sims(model_dicts, grad_dicts)
+
+            # 3. aggregate into server model
+            model_dict = self.get_global_model_dict(model_dicts)
+            self.model.load_state_dict(model_dict)
+
+            # 4. aggregate into cluster models
+            self.get_cluster_model_dicts(model_dicts, clusters)
+
+            # test and save models
+            self.test_save_models(m)
+
+    def get_cluster_model_dicts(self, model_dicts, clusters):
+        for c in range(self.n_clusters):
+            idxes = [i for i, x in enumerate(clusters) if c == x]
+            if len(idxes) != 0:
+                c_weights = np.array([self.weights[i] for i in idxes])
+                c_weights /= sum(c_weights)
+                c_model_dicts = [model_dicts[i] for i in idxes]
+                model_dict = self.model.state_dict()
+                for l, key in enumerate(model_dict.keys()):
+                    model_dict[key] = 0
+                    for i, sd in enumerate(c_model_dicts):
+                        model_dict[key] += sd[key] * self.weights[i]
+                self.cluster_model_dicts[c] = model_dict
+
+
 class FedGS(FedAvg):
     def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
         super(FedGS, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
@@ -325,38 +397,39 @@ class FedGS(FedAvg):
                 client.receive_global_model(self.personal_model_dicts[i])
 
             # 2. train client models
-            param_dicts = []
+            model_dicts = []
             for i, client in enumerate(self.clients):
                 param_dict = client.train_model()
-                param_dicts.append(param_dict)
+                model_dicts.append(param_dict)
 
             # 3. get gradient and compute cosine similarity
-            self.get_personal_grad_dicts(param_dicts)
+            grad_dicts = self.get_grad_dicts(model_dicts)
             logger.info('compute gradient cosine similarity')
-            self.compute_cos_sims()
+            self.compute_cos_sims(model_dicts, grad_dicts)
 
             # 4. update gradient and compute cosine similarity
-            self.update_personal_grad_dicts()
+            grad_dicts = self.update_grad_dicts(grad_dicts)
             logger.info('compute updated gradient cosine similarity')
-            self.compute_cos_sims()
+            self.compute_cos_sims(model_dicts, grad_dicts)
 
             # 5. compute personal models
             self.get_personal_model_dicts()
 
             # 6. aggregate into global model
-            mode_dict = self.get_global_model_dict(param_dicts)
+            mode_dict = self.get_global_model_dict(model_dicts)
             self.model.load_state_dict(mode_dict)
 
             # test
             self.test_save_models(m)
 
-    def update_personal_grad_dicts(self):
+    def update_grad_dicts(self, grad_dicts):
         for i in range(self.n_clients):
             for j in range(self.n_clients):
-                for key, val in self.cos_sims.items():
+                for key, val in self.grad_cos_sims.items():
                     sign = 1 if val[i][j] > 0 else 0
                     # sign = 1 if i == j else 0
-                    self.personal_grad_dicts[i][j][key] *= sign
+                    grad_dicts[i][j][key] *= sign
+        return grad_dicts
 
     def get_personal_model_dicts(self):
         weights = self.weights / self.weights.sum()

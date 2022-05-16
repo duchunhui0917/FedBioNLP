@@ -143,16 +143,17 @@ class ImageCCSADataset(BaseDataset):
 
 
 class MaskedLMDataset(BaseDataset):
-    def __init__(self, args, n_classes=None, transform=None, doc_index=None):
-        super(MaskedLMDataset, self).__init__(args, n_classes, transform, doc_index)
-        self.data = args[0]
-        self.mask = args[1]
-        self.targets = args[2]
+    def __init__(self, args, n_samples, n_classes=None, transform=None, doc_index=None):
+        super(MaskedLMDataset, self).__init__(args, n_samples, n_classes, transform, doc_index)
+        self.input_ids = torch.LongTensor(args['input_ids'])
+        self.input_mask = torch.LongTensor(args['input_mask'])
+        self.mlm_input_ids = torch.LongTensor(args['mlm_input_ids'])
+        self.mlm_mask = torch.LongTensor(args['mlm_mask'])
 
     def __getitem__(self, item):
-        data = [self.data[item], self.mask[item]]
-        target = [self.targets[item]]
-        return data, target
+        data = [self.input_ids[item], self.input_mask[item], self.mlm_mask[item]]
+        label = [self.mlm_input_ids[item]]
+        return data, label
 
     @staticmethod
     def metric(inputs, labels, logits, test_mode=True):
@@ -167,18 +168,18 @@ class MaskedLMDataset(BaseDataset):
         Returns:
 
         """
-        id_tokens, mask = inputs
+        input_ids, input_mask, mlm_mask = inputs
         labels = labels[0]
         metric = {}
         if test_mode:
             pred_labels = np.argmax(logits, axis=-1)
-            acc = float((pred_labels == labels).long().sum()) / mask.size
-            mask_acc = float(((pred_labels == labels).long() * mask).sum()) / mask.sum()
+            acc = float((pred_labels == labels).sum() / mlm_mask.size)
+            mask_acc = float(((pred_labels == labels) * mlm_mask).sum() / mlm_mask.sum())
             metric.update({'acc': acc, 'mask_acc': mask_acc})
         else:
             score, pred_labels = logits.max(-1)
-            acc = float((pred_labels == labels).long().sum()) / (mask.size(0) * mask.size(1))
-            mask_acc = float(((pred_labels == labels).long() * mask).sum()) / mask.sum()
+            acc = float((pred_labels == labels).long().sum() / (mlm_mask.size(0) * mlm_mask.size(1)))
+            mask_acc = float(((pred_labels == labels).long() * mlm_mask).sum() / mlm_mask.sum())
             metric.update({'acc': acc, 'mask_acc': mask_acc})
         return metric
 
@@ -188,6 +189,7 @@ class REGCNDataset(BaseDataset):
         super(REGCNDataset, self).__init__(args, n_samples, n_classes, transform, doc_index)
         self.input_ids = torch.LongTensor(args['input_ids'])
         self.input_mask = torch.LongTensor(args['input_mask'])
+        self.mlm_input_ids = torch.LongTensor(args['mlm_input_ids'])
         self.valid_ids = torch.LongTensor(args['valid_ids'])
         self.e1_mask = torch.LongTensor(args['e1_mask'])
         self.e2_mask = torch.LongTensor(args['e2_mask'])
@@ -196,7 +198,8 @@ class REGCNDataset(BaseDataset):
 
     def __getitem__(self, item):
         data = [self.input_ids[item], self.input_mask[item], self.valid_ids[item],
-                self.e1_mask[item], self.e2_mask[item], self.dep_matrix[item]]
+                self.e1_mask[item], self.e2_mask[item], self.dep_matrix[item],
+                self.mlm_input_ids[item]]
         label = [self.label[item]]
         return data, label
 

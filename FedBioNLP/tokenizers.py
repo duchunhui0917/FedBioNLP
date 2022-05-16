@@ -92,6 +92,12 @@ def dependency_to_matrix(dependency, max_seq_length):
     return dep_matrix
 
 
+def add_self_loop_dep_matrix(dep_matrix, n):
+    for i in range(n):
+        dep_matrix[i][i] = 1
+    return dep_matrix
+
+
 def get_local_dep_matrix(dep_matrix, pos1, pos2):
     res = np.zeros_like(dep_matrix)
     res[pos1, :] = dep_matrix[pos1, :]
@@ -142,7 +148,7 @@ def get_sdp_dep_matrix(dep_matrix, pos1, pos2):
             return res, len_sdp
 
 
-def re_dep_tokenizer(args, model_name, max_seq_length, pruned_dep=True):
+def re_dep_tokenizer(args, model_name, max_seq_length, pruned_dep=False):
     """
     org_text: 'A mechanic tightens the bolt with a spanner .'
     deps: [('ROOT', 0, 3), ('det', 2, 1), ('nsubj', 3, 2), ('det', 5, 4), ('obj', 3, 5), ('case', 8, 6), ('det', 8, 7),
@@ -176,6 +182,7 @@ def re_dep_tokenizer(args, model_name, max_seq_length, pruned_dep=True):
     args.update({
         "input_ids": [],
         "input_mask": [],
+        "mlm_input_ids": [],
         "valid_ids": [],
         "e1_mask": [],
         "e2_mask": [],
@@ -191,6 +198,7 @@ def re_dep_tokenizer(args, model_name, max_seq_length, pruned_dep=True):
 
         # add [CLS] token
         tokens = ["[CLS]"]
+        mlm_tokens = ["[CLS]"]
         valid = [0]
         e1_mask = []
         e2_mask = []
@@ -202,8 +210,6 @@ def re_dep_tokenizer(args, model_name, max_seq_length, pruned_dep=True):
             if len(tokens) >= max_seq_length - 1:
                 break
             if word in ["<e1>", "</e1>", "<e2>", "</e2>"]:
-                tokens.append(word)
-                valid.append(0)
                 if word in ["<e1>"]:
                     e1_mask_val = 1
                     e1_start = len(e1_mask)
@@ -211,15 +217,21 @@ def re_dep_tokenizer(args, model_name, max_seq_length, pruned_dep=True):
                     e1_mask_val = 0
                 if word in ["<e2>"]:
                     e2_mask_val = 1
-                    e2_start = len(e1_mask)
+                    e2_start = len(e2_mask)
                 elif word in ["</e2>"]:
                     e2_mask_val = 0
                 continue
 
             token = tokenizer.tokenize(word)
+            mlm_token = token[:]
+            for t in range(len(mlm_token)):
+                if random.random() < 0.15:
+                    mlm_token[t] = '[MASK]'
+
             if len(tokens) + len(token) > max_seq_length - 1:
                 break
             tokens.extend(token)
+            mlm_tokens.extend(mlm_token)
             e1_mask.append(e1_mask_val)
             e2_mask.append(e2_mask_val)
             for m in range(len(token)):
@@ -230,34 +242,43 @@ def re_dep_tokenizer(args, model_name, max_seq_length, pruned_dep=True):
 
         # add [SEP] token
         tokens.append("[SEP]")
+        mlm_tokens.append("[SEP]")
         valid.append(0)
         e1_mask.append(0)
         e2_mask.append(0)
+
+        # convert tokens to ids
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        mlm_input_ids = tokenizer.convert_tokens_to_ids(mlm_tokens)
         input_mask = [1] * len(input_ids)
 
         # zero-pad up to the sequence length
         padding = [0] * (max_seq_length - len(input_ids))
         input_ids += padding
+        mlm_input_ids += padding
         input_mask += padding
         valid += padding
         e1_mask += [0] * (max_seq_length - len(e1_mask))
         e2_mask += [0] * (max_seq_length - len(e2_mask))
 
+        mlm_input_ids = [-100 if x != tokenizer.mask_token_id else x for x in mlm_input_ids]
         # process pruned dependency matrix
         local_dep_matrix = get_local_dep_matrix(dep_matrix, e1_start, e2_start)
         sdp_dep_matrix, len_sdp = get_sdp_dep_matrix(dep_matrix, e1_start, e2_start)
         if pruned_dep:
             dep_matrix = local_dep_matrix | sdp_dep_matrix
+        dep_matrix = add_self_loop_dep_matrix(dep_matrix, sum(valid))
 
         assert len(input_ids) == max_seq_length
         assert len(input_mask) == max_seq_length
+        assert len(mlm_input_ids) == max_seq_length
         assert len(valid) == max_seq_length
         assert len(e1_mask) == max_seq_length
         assert len(e2_mask) == max_seq_length
 
         args["input_ids"].append(input_ids)
         args["input_mask"].append(input_mask)
+        args["mlm_input_ids"].append(mlm_input_ids)
         args["valid_ids"].append(valid)
         args["e1_mask"].append(e1_mask)
         args["e2_mask"].append(e2_mask)
@@ -267,32 +288,3 @@ def re_dep_tokenizer(args, model_name, max_seq_length, pruned_dep=True):
     logger.info('tokenizing finished')
 
     return args
-
-
-def MaskedLM_tokenizer(data, model_name):
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-    max_length = tokenizer.model_max_length
-
-    mask_data = []
-    args2 = torch.zeros((len(data), max_length), dtype=torch.int64)
-    for i, text in enumerate(data):
-        mask_text = text.split(' ')
-        for j in range(len(mask_text)):
-            if random.random() < 0.15:
-                mask_text[j] = '[MASK]'
-                args2[i][j] = 1
-
-        mask_text = ' '.join(mask_text)
-        mask_data.append(mask_text)
-
-    args1 = tokenizer(mask_data, padding='max_length', truncation=True, return_tensors="pt")["input_ids"]
-    args3 = tokenizer(data, padding='max_length', truncation=True, return_tensors="pt")["input_ids"]
-
-    return [args1, args2, args3]
-
-
-def NLP_tokenizer(data):
-    tokenizer = AutoTokenizer.from_pretrained('distilbert-base-cased')
-    data = tokenizer(data, padding='max_length', truncation=True, return_tensors='pt')['input_ids']
-    return data

@@ -18,7 +18,7 @@ parser.add_argument('--train', default=True)
 
 # common FL hyperparameters
 parser.add_argument('--dataset_name', type=str,
-                    default='AIMed_1|2*AIMed_2|2*PGR_2797',
+                    default='LLL',
                     choices=['MNIST', 'CIFAR10', 'CIFAR100',
                              '20news', 'agnews', 'sst_2', 'sentiment140',
                              'GAD', 'EU-ADR', 'PGR_Q1', 'PGR_Q2', 'CoMAGC', 'PolySearch',
@@ -56,7 +56,7 @@ parser.add_argument('--pk', type=list, default=['embeddings', 'transformer.layer
 parser.add_argument('--n_clusters', type=int, default=0)
 # for SCL
 parser.add_argument('--SCL', default=False)
-# for MaskedLM
+# for
 parser.add_argument('--MaskedLM', default=False)
 
 # training hyperparameters
@@ -71,7 +71,7 @@ parser.add_argument('--n_epochs', default=1)
 parser.add_argument('--n_batches', default=0)
 parser.add_argument('--opt', default='Adam',
                     choices=['SGD', 'Adam', 'WPOptim'])
-parser.add_argument('--batch_size', default=32)
+parser.add_argument('--batch_size', default=8)
 parser.add_argument('--max_seq_length', default=384)
 
 

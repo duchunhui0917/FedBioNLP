@@ -252,6 +252,10 @@ def over_sampling_h5(file_name, times=1., aug=False, only_false=True):
 
 # csv2tsv(['HPRD50'])
 # undersampling_h5('AIMed_2|2', nums=[390, 390, 90, 90], sampled_name='balance')
+# undersampling_h5('AIMed_1|2', nums=[390, 390, 90, 90], sampled_name='balance')
+
+# undersampling_h5('AIMed_cur', nums=[400, 100, 80, 20], sampled_name='8:2')
+# undersampling_h5('AIMed_2|2', nums=[98, 390, 22, 90], sampled_name='ratio_reverse')
 
 # merge_h5(['AIMed_1|2', 'AIMed_2|2'])
 # merge_h5(['LLL'])
@@ -262,6 +266,14 @@ def over_sampling_h5(file_name, times=1., aug=False, only_false=True):
 
 # merge_h5(['AIMed_1|2', 'AIMed_2|2'])
 # merge_h5(['AIMed_1|2', 'PGR_2797'])
+# merge_h5(['AIMed_1|2', 'AIMed_2|2', 'PGR_2797'])
 # merge_h5(['AIMed_1|2', 'AIMed_2|2_label_reverse'])
+# merge_h5(['AIMed_1|2', 'AIMed_2|2', 'AIMed_2|2_label_reverse'])
+
 # merge_h5(['AIMed_1|2', 'AIMed_2|2_balance'])
-merge_h5(['AIMed_1|2', 'AIMed_2|2_back_translate'])
+# merge_h5(['AIMed_1|2', 'AIMed_2|2_back_translate'])
+# merge_h5(['AIMed_2:8', 'AIMed_2:8'])
+# merge_h5(['AIMed_2:8', 'AIMed_5:5'])
+# merge_h5(['AIMed_2:8', 'AIMed_8:2'])
+# merge_h5(['AIMed_2:8', 'AIMed_5:5', 'AIMed_8:2'])
+merge_h5(['AIMed_1|2', 'AIMed_2|2', 'PGR_2797'])

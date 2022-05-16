@@ -9,30 +9,11 @@ from .models import *
 from .utils.fl_utils import generate_idxes_dirichlet, generate_idxes_kmeans, generate_idxes_group
 
 logger = logging.getLogger(os.path.basename(__file__))
+base_dir = os.path.expanduser('~/FedBioNLP')
 
 
-def process_dataset(dataset_name, n_clients=1, beta=0.5, n_clusters=None, seed=None, split_type='centralized',
-                    model_name='distilbert-base-uncased', max_seq_length=384,
-                    GRL=False, discriminator=False, MaskedLM=False, MMD=False,
-                    CCSA=False, horizon=False, SCL=False):
-    """
-
-    Args:
-        discriminator:
-        GRL:
-        dataset_name:
-        n_clients:
-        beta:
-        n_clusters:
-        seed:
-        split_type: 'centralized', 'label shift', 'feature shift'
-        model_name:
-
-    Returns:
-
-    """
-
-    base_dir = os.path.expanduser('~/FedBioNLP')
+def process_dataset(dataset_name, model_name, split_type, n_clients, max_seq_length, args):
+    res = {}
     clients = list(range(n_clients))
     train_datasets = {}
     test_datasets = {}
@@ -195,26 +176,29 @@ def process_dataset(dataset_name, n_clients=1, beta=0.5, n_clusters=None, seed=N
             elif task_type == 'relation_extraction':
                 n_classes = attributes['num_labels']
 
-                model = REModel(model_name, n_classes)
+                # model = REModel(model_name, n_classes)
+                model = REGCNModel(model_name, n_classes)
+
                 # model = RELatentGCNModel(model_name, n_classes)
-
-                if horizon:
-                    model = REHorizonModel(model_name, n_classes)
-                if GRL:
-                    model = REGRLModel(model_name, n_classes)
-                if MMD:
-                    model = REMMDModel(model_name, n_classes)
-                if CCSA:
-                    model = RECCSAModel(model_name, n_classes)
-                if SCL:
+                if args.n_clusters:
+                    cluster_models = [REModel(model_name, n_classes) for _ in range(args.n_clusters)]
+                    res.update({'cluster_models': cluster_models})
+                # if args.horizon:
+                #     model = REHorizonModel(model_name, n_classes)
+                # if args.GRL:
+                #     model = REGRLModel(model_name, n_classes)
+                # if args.MMD:
+                #     model = REMMDModel(model_name, n_classes)
+                # if args.CCSA:
+                #     model = RECCSAModel(model_name, n_classes)
+                if args.SCL:
                     model = RESCLModel(model_name, n_classes)
-                if MaskedLM:
+                if args.MaskedLM:
                     model = MaskedLMBERT(model_name)
-
+                # model = RelationExtractionHorizonBERT(model_name, n_classes)
                 tokenizer = model.tokenizer
                 my_train_dataset = my_test_dataset = model.dataset
 
-                # model = RelationExtractionHorizonBERT(model_name, n_classes)
                 args = {'text': [],
                         'e_text': [],
                         'dep_text': [],
@@ -275,7 +259,7 @@ def process_dataset(dataset_name, n_clients=1, beta=0.5, n_clusters=None, seed=N
         clients = [0]
         train_datasets = {0: centralized_train_dataset}
         test_datasets = {0: centralized_test_dataset}
-        return clients, train_datasets, test_datasets, centralized_train_dataset, centralized_test_dataset, model
+        return clients, train_datasets, test_datasets, centralized_train_dataset, centralized_test_dataset, model, res
     elif split_type == 'idx_split':
         n_docs = len(unique_docs)
         clients = list(range(n_docs))
@@ -295,7 +279,7 @@ def process_dataset(dataset_name, n_clients=1, beta=0.5, n_clusters=None, seed=N
             test_datasets.update({d: test_dataset})
 
             logger.info(f'doc: {d}, number of samples of train/test dataset: {num_train}/{num_test}')
-        return clients, train_datasets, test_datasets, centralized_train_dataset, centralized_test_dataset, model
+        return clients, train_datasets, test_datasets, centralized_train_dataset, centralized_test_dataset, model, res
     elif split_type == 'label_shift':
         logger.info('Start splitting data according to label shift.')
         if n_clusters is None:
