@@ -59,8 +59,11 @@ def process_re_lines(line, name):
 
     text = x
     label = y
-    ent1 = '<e1> ' + x[pos00:pos01] + ' </e1>'
-    ent2 = '<e2> ' + x[pos10:pos11] + ' </e2>'
+    ent1 = ' <e1> ' + x[pos00:pos01] + ' </e1> '
+    ent2 = ' <e2> ' + x[pos10:pos11] + ' </e2> '
+
+    # ent1 = ' <e1> entity </e1> '
+    # ent2 = ' <e2> entity </e2> '
 
     if pos00 < pos10:
         e_text = x[:pos00] + ent1 + x[pos01:pos10] + ent2 + x[pos11:]
@@ -103,7 +106,7 @@ def h52txt(file_name):
 
 
 def bio_RE_txt2h5(file_name, aug_method=None, process=True):
-    dir_name = file_name.split('_')[0]
+    dir_name = file_name.split('-')[0]
 
     if aug_method:
         train_path = os.path.join(base_dir, f'data/bio_RE/{dir_name}/{file_name}_{aug_method}-train.tsv')
@@ -294,7 +297,7 @@ def csv2tsv(name_list):
 # bio_RE_txt2h5('GAD', process=True)
 # bio_RE_txt2h5('EU-ADR', process=True)
 # bio_RE_txt2h5('CoMAGC', process=True)
-# bio_RE_txt2h5('PGR_Q1', process=True)
+bio_RE_txt2h5('PGR_Q1', process=True)
 # bio_RE_txt2h5('PGR_Q2', process=True)
 
 # bio_RE_txt2h5('AIMed', process=True)
@@ -307,11 +310,11 @@ def csv2tsv(name_list):
 # bio_RE_txt2h5('AIMed_2|2', aug_method='label_reverse', process=False)
 # bio_RE_txt2h5('AIMed_2|2', aug_method='tfidf', process=False)
 # bio_RE_txt2h5('AIMed_2|2', aug_method='label_random', process=False)
-bio_RE_txt2h5('AIMed_2|2', aug_method='sent_len', process=False)
+# bio_RE_txt2h5('AIMed_2|2', aug_method='sent_len', process=False)
 
 # aug_text('AIMed_2|2', aug_method='back_translate', mode='test', process=False)
 # aug_text('AIMed_2|2', aug_method='label_random', mode='train', process=False)
 # aug_text('AIMed_1|2_balance', aug_method='label_reverse', mode='train', process=False)
 # aug_text('AIMed_2|2', aug_method='sent_len', mode='test', process=False)
-# h52txt('AIMed_2|2')
+# h52txt('PGR_Q1')
 # h52txt('AIMed_1|2_balance')

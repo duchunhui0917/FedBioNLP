@@ -5,13 +5,13 @@ from transformers import AutoModelForTokenClassification
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 from torch import nn
 from transformers import AutoModel, AutoModelForMaskedLM, AutoConfig
-from utils.GCN_utils import GraphConvolution, LSR
+from .utils.GCN_utils import GraphConvolution, LSR
 import logging
 import os
 import copy
 from .tokenizers import *
 from .datasets import *
-from .modules import DistilBertForMaskedLM, MMDLoss, GRL
+from .modules import DistilBertForMaskedLM, MMDLoss, GRL, SupConLoss, LSoftmaxLinear, valid_filter, max_pooling
 
 logger = logging.getLogger(os.path.basename(__file__))
 
@@ -143,158 +143,114 @@ class SeqClsRNN(nn.Module):
     pass
 
 
-class SequenceClassificationBert(nn.Module):
+class SCModel(nn.Module):
     def __init__(self, model_name, output_dim):
-        super(SequenceClassificationBert, self).__init__()
-        self.model = AutoModel.from_pretrained(model_name)
-        self.classifier = nn.Sequential(
-            nn.Linear(768, 768),
-            nn.BatchNorm1d(768),
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(768, output_dim)
-        )
+        super(SCModel, self).__init__()
+        self.encoder = AutoModel.from_pretrained(model_name)
+        self.classifier = nn.Linear(768, output_dim)
+        # self.classifier = LSoftmaxLinear(768, output_dim, 0)
 
         self.criterion = nn.CrossEntropyLoss()
+        self.tokenizer = sc_tokenizer
+        self.dataset = SCDataset
+
+        for param in self.encoder.parameters():
+            param.requires_grad = True
 
         # for param in self.model.base_model.parameters():
         #     param.requires_grad = False
 
     def forward(self, inputs, labels):
-        inputs = inputs[0]
-        outputs = self.model(inputs, output_hidden_states=True)
+        input_ids, attention_mask = inputs
+        labels = labels[0]
+        outputs = self.encoder(input_ids, attention_mask=attention_mask, output_hidden_states=True)
         hidden_states = outputs.hidden_states
         last_hidden_state = outputs.last_hidden_state
+
+        cls = last_hidden_state[:, 0]
+        logits = self.classifier(cls, labels)
+
+        loss = self.criterion(logits, labels)
+        return hidden_states, logits, [loss]
+
+
+class SCSCLModel(SCModel):
+    def __init__(self, model_name, output_dim):
+        super(SCSCLModel, self).__init__(model_name, output_dim)
+
+        self.Lambda = 0.9
+        self.tau = 0.3
+        self.projection = nn.Sequential(
+            nn.Linear(768, 768),
+            nn.ReLU(),
+            nn.Linear(768, 384)
+        )
+        self.scl = SupConLoss
+        for param in self.encoder.parameters():
+            param.requires_grad = True
+
+    def forward(self, inputs, labels, ite=None):
+        # if ite is not None:
+        #     self.Lambda = max(1 - ite / 10, 0)
+
+        input_ids, attention_mask = inputs
+        labels = labels[0]
+        outputs = self.encoder(input_ids, attention_mask=attention_mask, output_hidden_states=True)
+        hidden_states = outputs.hidden_states
+        last_hidden_state = outputs.last_hidden_state
+
         pooled_output = last_hidden_state[:, 0]
         logits = self.classifier(pooled_output)
 
-        loss = self.criterion(logits, labels)
-        return hidden_states, logits, [loss]
+        ce = self.criterion(logits, labels)
+        if self.training:
+            scl = self.scl(pooled_output, labels)
+            loss = (1 - self.Lambda) * ce + self.Lambda * scl
+
+            return None, logits, [loss, ce, scl]
+        else:
+            return hidden_states, logits, [ce]
 
 
 class REModel(nn.Module):
-    def __init__(self, model_name, output_dim):
+    def __init__(self, model_name, output_dim, num_gcn_layers):
         super(REModel, self).__init__()
         self.encoder = AutoModel.from_pretrained(model_name)
+        gcn_layer = GraphConvolution(768, 768)
+        self.gcn_layers = nn.ModuleList([copy.deepcopy(gcn_layer) for _ in range(num_gcn_layers)])
         self.dropout = nn.Dropout()
-        self.classifier = nn.Sequential(
-            nn.Linear(768 * 2, 768 * 2),
-            nn.ReLU(),
-            nn.Linear(768 * 2, output_dim)
-        )
+        self.classifier = nn.Linear(768 * 2, output_dim)
+
+        config = AutoConfig.from_pretrained(model_name)
+        self.mlm = DistilBertForMaskedLM(config)
 
         self.criterion = nn.CrossEntropyLoss()
-        self.tokenizer = re_tokenizer
         self.dataset = REDataset
 
-    def freeze_params(self):
-        for param in self.encoder.parameters():
-            param.requires_grad = False
-
-    def activate_params(self):
         for param in self.encoder.parameters():
             param.requires_grad = True
 
-    @staticmethod
-    def max_pooling(sequence, e_mask):
-        """
-
-        Args:
-            sequence: (B, L, H)
-            e_mask: (B, L, H)
-
-        Returns:
-
-        """
-        entity_output = sequence * torch.stack([e_mask] * sequence.shape[-1], 2) + torch.stack(
-            [(1.0 - e_mask) * -1000.0] * sequence.shape[-1], 2)
-        entity_output = torch.max(entity_output, -2)[0]
-        return entity_output.type_as(sequence)
-
     def forward(self, inputs, labels):
-        input_ids, input_mask, e1_mask, e2_mask = inputs
+        input_ids, input_mask, e1_mask, e2_mask, mlm_input_ids, valid_ids, dep_matrix = inputs
         labels = labels[0]
         outputs = self.encoder(input_ids, attention_mask=input_mask, output_hidden_states=True)
-        hidden_states = outputs.hidden_states
+        encoder_hidden_states = outputs.hidden_states
         encoder_output = outputs.last_hidden_state  # (B, L, H)
+        encoder_output = self.dropout(encoder_output)
+
+        if torch.max(valid_ids) > 0 and torch.max(dep_matrix) > 0:
+            # filter valid output
+            valid_output = valid_filter(encoder_output, valid_ids)  # (B, L, H)
+
+            # gcn
+            gcn_output = valid_output
+            for gcn_layer in self.gcn_layers:
+                gcn_output = gcn_layer(gcn_output, dep_matrix)  # (B, L, H)
+            encoder_output = self.dropout(gcn_output)
 
         # extract entity
-        e1_h = self.max_pooling(encoder_output, e1_mask)  # (B, H)
-        e2_h = self.max_pooling(encoder_output, e2_mask)  # (B, H)
-        ent = torch.cat([e1_h, e2_h], dim=-1)  # (B, 2H)
-        ent = self.dropout(ent)
-
-        # classifier
-        logits = self.classifier(ent)  # (B, C)
-        loss = self.criterion(logits, labels)
-
-        return hidden_states, logits, [loss]
-
-
-class REGCNModel(REModel):
-    def __init__(self, model_name, output_dim):
-        super(REGCNModel, self).__init__(model_name, output_dim)
-        gcn_layer = GraphConvolution(768, 768)
-        self.gcn_layers = nn.ModuleList([copy.deepcopy(gcn_layer) for _ in range(0)])
-        self.tokenizer = re_dep_tokenizer
-        self.dataset = REGCNDataset
-        # self.encoder = AutoModelForMaskedLM.from_pretrained(model_name)
-        config = AutoConfig.from_pretrained(model_name)
-        self.encoder = DistilBertForMaskedLM(config)
-        self.patch = nn.Sequential(
-            nn.Linear(768, 768),
-            nn.ReLU(),
-            nn.Linear(768, 768),
-            nn.ReLU()
-        )
-        for param in self.encoder.parameters():
-            param.requires_grad = True
-
-    @staticmethod
-    def valid_filter(sequence, valid_ids):
-        """
-
-        Args:
-            sequence: (B, L, H)
-            valid_ids: (B, L, H)
-
-        Returns:
-
-        """
-        batch_size, max_len, hidden_dim = sequence.shape
-        valid_output = torch.zeros(batch_size, max_len, hidden_dim,
-                                   dtype=sequence.dtype,
-                                   device=sequence.device)
-        for i in range(batch_size):
-            tmp = sequence[i][valid_ids[i] == 1]  # (L, H)
-            valid_output[i][:tmp.size(0)] = tmp
-        return valid_output
-
-    def forward(self, inputs, labels):
-        input_ids, input_mask, valid_ids, e1_mask, e2_mask, dep_matrix, mlm_input_ids = inputs
-        labels = labels[0]
-        outputs = self.encoder(input_ids, labels=mlm_input_ids, attention_mask=input_mask, output_hidden_states=True)
-        hidden_states = outputs.hidden_states
-        encoder_output = hidden_states[-1]  # (B, L, H)
-        mlm_loss = outputs.loss
-
-        # # add patch
-        # path_outputs = self.patch(hidden_states[0])  # (B, L, H)
-        # encoder_output += path_outputs
-
-        # filter valid output
-        valid_output = self.valid_filter(encoder_output, valid_ids)  # (B, L, H)
-        valid_output = self.dropout(valid_output)
-
-        # gcn
-        gcn_output = valid_output
-        for gcn_layer in self.gcn_layers:
-            gcn_output = gcn_layer(gcn_output, dep_matrix)  # (B, L, H)
-        gcn_output = self.dropout(gcn_output)
-
-        # extract entity
-        e1_h = self.max_pooling(gcn_output, e1_mask)  # (B, H)
-        e2_h = self.max_pooling(gcn_output, e2_mask)  # (B, H)
+        e1_h = max_pooling(encoder_output, e1_mask)  # (B, H)
+        e2_h = max_pooling(encoder_output, e2_mask)  # (B, H)
         ent = torch.cat([e1_h, e2_h], dim=-1)  # (B, 2H)
         ent = self.dropout(ent)
 
@@ -302,47 +258,76 @@ class REGCNModel(REModel):
         logits = self.classifier(ent)  # (B, C)
         ce_loss = self.criterion(logits, labels)
 
-        loss = ce_loss + 0.1 * mlm_loss
+        hidden_states = encoder_hidden_states + (ent, logits)
 
-        return hidden_states, logits, [loss, ce_loss, mlm_loss]
+        if self.training and torch.max(mlm_input_ids) > 0:
+            mlm_outputs = self.mlm(input_ids, labels=mlm_input_ids, attention_mask=input_mask,
+                                   output_hidden_states=True)
+            mlm_loss = mlm_outputs.loss
+            loss = ce_loss + 0.01 * mlm_loss
+            return hidden_states, logits, [loss, ce_loss, mlm_loss]
+        else:
+            return hidden_states, logits, [ce_loss]
 
-    # def forward(self, inputs, labels):
-    #     input_ids, input_mask, valid_ids, e1_mask, e2_mask, dep_matrix, mlm_input_ids = inputs
-    #     labels = labels[0]
-    #
-    #     outputs = self.encoder(input_ids, labels=mlm_input_ids, attention_mask=input_mask, output_hidden_states=True)
-    #     hidden_states = outputs.hidden_states
-    #     encoder_output = hidden_states[-1]  # (B, L, H)
-    #     mlm_loss = outputs.loss
-    #
-    #     # add patch
-    #     path_outputs = self.patch(hidden_states[0])  # (B, L, H)
-    #     encoder_output += path_outputs
-    #
-    #     # filter valid output
-    #     valid_output = self.valid_filter(encoder_output, valid_ids)  # (B, L, H)
-    #     valid_output = self.dropout(valid_output)
-    #
-    #     # gcn
-    #     gcn_output = valid_output
-    #     for gcn_layer in self.gcn_layers:
-    #         gcn_output = gcn_layer(gcn_output, dep_matrix)  # (B, L, H)
-    #     gcn_output = self.dropout(gcn_output)
-    #
-    #     # extract entity
-    #     e1_h = self.max_pooling(gcn_output, e1_mask)  # (B, H)
-    #     e2_h = self.max_pooling(gcn_output, e2_mask)  # (B, H)
-    #     ent = torch.cat([e1_h, e2_h], dim=-1)  # (B, 2H)
-    #     ent = self.dropout(ent)
-    #
-    #     # classifier
-    #     logits = self.classifier(ent)  # (B, C)
-    #     ce_loss = self.criterion(logits, labels)
-    #
-    #     alpha = 1
-    #     loss = mlm_loss
-    #
-    #     return hidden_states, logits, [mlm_loss]
+
+
+class REGSNModel(REModel):
+    def __init__(self, model_name, output_dim, num_gcn_layers):
+        super(REGSNModel, self).__init__(model_name, output_dim, num_gcn_layers)
+
+    def forward(self, inputs, labels):
+        input_ids, input_mask, e1_mask, e2_mask, mlm_input_ids, valid_ids, dep_matrix = inputs
+        labels = labels[0]
+
+        # relation extraction
+        outputs = self.encoder(input_ids, attention_mask=input_mask, output_hidden_states=True)
+        encoder_hidden_states = outputs.hidden_states
+        encoder_output = outputs.last_hidden_state  # (B, L, H)
+
+        if torch.max(valid_ids) > 0 and torch.max(dep_matrix) > 0:
+            # filter valid output
+            valid_output = valid_filter(encoder_output, valid_ids)  # (B, L, H)
+            valid_output = self.dropout(valid_output)
+
+            # gcn
+            gcn_output = valid_output
+            for gcn_layer in self.gcn_layers:
+                gcn_output = gcn_layer(gcn_output, dep_matrix)  # (B, L, H)
+            encoder_output = self.dropout(gcn_output)
+
+        # extract entity
+        e1_h = max_pooling(encoder_output, e1_mask)  # (B, H)
+        e2_h = max_pooling(encoder_output, e2_mask)  # (B, H)
+        ent = torch.cat([e1_h, e2_h], dim=-1)  # (B, 2H)
+        ent = self.dropout(ent)
+
+        # classifier
+        logits = self.classifier(ent)  # (B, C)
+        ce_loss = self.criterion(logits, labels)
+
+        hidden_states = encoder_hidden_states + (ent, logits)
+
+        if self.training:
+            # encoder_rep = encoder_hidden_states[-1][:, 0]  # (B, H)
+            # encoder_rep = torch.max(encoder_hidden_states[-1], -2)[0]  # (B, H)
+            encoder_rep = torch.mean(encoder_hidden_states[-1], -2)  # (B, H)
+
+            # masked language model
+            mlm_outputs = self.mlm(input_ids, labels=mlm_input_ids, attention_mask=input_mask,
+                                   output_hidden_states=True)
+            mlm_hidden_states = mlm_outputs.hidden_states
+            # mlm_rep = mlm_hidden_states[-1][:, 0]  # (B, H)
+            # mlm_rep = torch.max(mlm_hidden_states[-1], -2)[0]  # (B, H)
+            mlm_rep = torch.mean(mlm_hidden_states[-1], -2)  # (B, H)
+
+            mlm_loss = mlm_outputs.loss
+
+            dif_loss = torch.norm(torch.matmul(encoder_rep, mlm_rep.T)) ** 2
+
+            loss = ce_loss + 0.01 * mlm_loss + 0.01 * dif_loss
+            return hidden_states, logits, [loss, ce_loss, mlm_loss, dif_loss]
+        else:
+            return hidden_states, logits, [ce_loss]
 
 
 class RELatentGCNModel(REModel):
@@ -463,35 +448,28 @@ class REGRLModel(REModel):
 class RESCLModel(REModel):
     def __init__(self, model_name, output_dim):
         super(RESCLModel, self).__init__(model_name, output_dim)
-        self.Lambda = 1
-        self.tau = 0.3
+        self.Lambda = 0.9
+        self.projection = nn.Sequential(
+            nn.Linear(768 * 3, 768),
+            nn.ReLU(),
+            nn.Linear(768, 384)
+        )
+        self.scl = SupConLoss
+        for param in self.encoder.parameters():
+            param.requires_grad = True
 
-    def scl(self, ent, labels):
-        ent_norm = F.normalize(ent, dim=1)
-        ent_pie = torch.transpose(ent_norm, 0, 1)
-
-        cos = torch.matmul(ent_norm, ent_pie)
-        exp_cos = torch.exp(cos / self.tau)
-        log_exp_cos = - torch.log(exp_cos / (torch.sum(exp_cos, dim=1) - torch.diag(exp_cos)))
-
-        equal = torch.zeros_like(log_exp_cos)
-
-        for i in range(len(equal)):
-            idx = torch.where(labels == labels[i])[0]
-            if len(idx) > 1:
-                equal[i][idx] = 1 / (len(idx) - 1)
-                equal[i][i] = 0
-
-        cls = log_exp_cos * equal
-        cls = cls.sum(1).mean()
-        return cls
-
-    def forward(self, inputs, labels):
+    def forward(self, inputs, labels, ite=None):
+        # if ite is not None:
+        #     self.Lambda = max(1 - ite / 10, 0)
         input_ids, input_mask, e1_mask, e2_mask = inputs
         labels = labels[0]
         outputs = self.encoder(input_ids, attention_mask=input_mask, output_hidden_states=True)
         hidden_states = outputs.hidden_states
         encoder_output = outputs.last_hidden_state  # (B, L, H)
+
+        # outputs_aug = self.encoder(input_ids, attention_mask=input_mask, output_hidden_states=True)
+        # hidden_states_aug = outputs_aug.hidden_states
+        # encoder_output_aug = outputs_aug.last_hidden_state  # (B, L, H)
 
         # extract entity
         e1_h = self.max_pooling(encoder_output, e1_mask)  # (B, H)
@@ -499,10 +477,20 @@ class RESCLModel(REModel):
         ent = torch.cat([e1_h, e2_h], dim=-1)  # (B, 2H)
         ent = self.dropout(ent)
 
+        # # extract entity
+        # e1_h_aug = self.max_pooling(encoder_output_aug, e1_mask)  # (B, H)
+        # e2_h_aug = self.max_pooling(encoder_output, e2_mask)  # (B, H)
+        # ent_aug = torch.cat([e1_h_aug, e2_h_aug], dim=-1)  # (B, 2H)
+        # ent_aug = self.dropout(ent_aug)
+
         logits = self.classifier(ent)
         ce = self.criterion(logits, labels)
 
+        hidden_states += (ent, logits)
         if self.training:
+            # ent = torch.cat([ent, ent_aug], dim=0)
+            # labels = torch.cat([labels, labels], dim=0)
+            # features = self.projection(ent)
             scl = self.scl(ent, labels)
             loss = (1 - self.Lambda) * ce + self.Lambda * scl
 

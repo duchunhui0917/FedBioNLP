@@ -102,6 +102,7 @@ def flat_model(model):
 
 def generate_idxes_dirichlet(targets, n_clients, n_classes, beta=0.5, seed=None):
     idxes = [[] for _ in range(n_clients)]
+    targets = np.array(targets)
     for k in range(n_classes):
         idx_k = np.where(targets == k)[0]
         if seed is not None:

@@ -12,7 +12,7 @@ logger = logging.getLogger(os.path.basename(__file__))
 base_dir = os.path.expanduser('~/FedBioNLP')
 
 
-def process_dataset(dataset_name, model_name, split_type, n_clients, max_seq_length, args):
+def process_dataset(dataset_name, model_name, split_type, n_clients, parser_args):
     res = {}
     clients = list(range(n_clients))
     train_datasets = {}
@@ -132,6 +132,8 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, max_seq_len
             task_type = attributes['task_type']
             if 'doc_index' in attributes:
                 doc_index = attributes['doc_index']
+            else:
+                doc_index = {str(i): 0 for i in index_list}
 
             # ls["attributes"][()] = json.dumps(attributes)
 
@@ -168,94 +170,120 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, max_seq_len
                     data.append(" ".join(question_components))
             # specifically for cnn_dailymail, cornell_movie_dialogue
             elif task_type == 'sequence_to_sequence':
-                tokenizer = NLP_tokenizer
+                tokenizer = sc_tokenizer
                 for i in df['Y'].keys():
                     sentence = df['Y'][i][()].decode('UTF-8')
                     data.append(sentence)
             # specifically for semeval_2010_task8...
+
             elif task_type == 'relation_extraction':
                 n_classes = attributes['num_labels']
-
-                # model = REModel(model_name, n_classes)
-                model = REGCNModel(model_name, n_classes)
+                model = REModel(model_name, n_classes, parser_args.num_gcn_layers)
 
                 # model = RELatentGCNModel(model_name, n_classes)
-                if args.n_clusters:
-                    cluster_models = [REModel(model_name, n_classes) for _ in range(args.n_clusters)]
-                    res.update({'cluster_models': cluster_models})
-                # if args.horizon:
+                # if parser_args.n_clusters:
+                #     cluster_models = [REModel(model_name, n_classes, parser_args.num_gcn_layers) for _ in
+                #                       range(parser_args.n_clusters)]
+                #     res.update({'cluster_models': cluster_models})
+                # if parser_args.horizon:
                 #     model = REHorizonModel(model_name, n_classes)
-                # if args.GRL:
+                # if parser_args.GRL:
                 #     model = REGRLModel(model_name, n_classes)
-                # if args.MMD:
+                # if parser_args.MMD:
                 #     model = REMMDModel(model_name, n_classes)
-                # if args.CCSA:
+                # if parser_args.CCSA:
                 #     model = RECCSAModel(model_name, n_classes)
-                if args.SCL:
-                    model = RESCLModel(model_name, n_classes)
-                if args.MaskedLM:
-                    model = MaskedLMBERT(model_name)
+                if parser_args.alg == 'GSN':
+                    model = REGSNModel(model_name, n_classes, parser_args.num_gcn_layers)
+                if parser_args.alg == 'SCL':
+                    model = RESCLModel(model_name, n_classes, parser_args.num_gcn_layers)
                 # model = RelationExtractionHorizonBERT(model_name, n_classes)
-                tokenizer = model.tokenizer
+
                 my_train_dataset = my_test_dataset = model.dataset
+                n_classes = attributes['num_labels']
 
-                args = {'text': [],
-                        'e_text': [],
-                        'dep_text': [],
-                        'dep_e_text': [],
-                        'dependency': [],
-                        'doc': [],
-                        'label': []}
-                for idx in index_list:
-                    text = df['text'][str(idx)][()].decode('UTF-8')
-                    e_text = df['e_text'][str(idx)][()].decode('UTF-8')
-                    dep_text = df['dep_text'][str(idx)][()].decode('UTF-8')
-                    dep_e_text = df['dep_e_text'][str(idx)][()].decode('UTF-8')
-                    dependency = df['dependency'][str(idx)][()].decode('UTF-8')
-                    label = df['label'][str(idx)][()].decode('UTF-8')
-                    doc = doc_index[str(idx)]
+                try:
+                    tokenizer = re_dep_tokenizer
+                    args = {'text': [],
+                            'e_text': [],
+                            'dep_text': [],
+                            'dep_e_text': [],
+                            'dependency': [],
+                            'doc': [],
+                            'label': []}
+                    for idx in index_list:
+                        text = df['text'][str(idx)][()].decode('UTF-8')
+                        e_text = df['e_text'][str(idx)][()].decode('UTF-8')
+                        dep_text = df['dep_text'][str(idx)][()].decode('UTF-8')
+                        dep_e_text = df['dep_e_text'][str(idx)][()].decode('UTF-8')
+                        dependency = df['dependency'][str(idx)][()].decode('UTF-8')
+                        label = df['label'][str(idx)][()].decode('UTF-8')
+                        doc = doc_index[str(idx)]
 
-                    unique_docs.add(doc)
+                        unique_docs.add(doc)
 
-                    args['text'].append(text)
-                    args['e_text'].append(e_text)
-                    args['dep_text'].append(dep_text)
-                    args['dep_e_text'].append(dep_e_text)
-                    args['dependency'].append(dependency)
-                    args['label'].append(label_vocab[label])
-                    args['doc'].append(doc)
+                        args['text'].append(text)
+                        args['e_text'].append(e_text)
+                        args['dep_text'].append(dep_text)
+                        args['dep_e_text'].append(dep_e_text)
+                        args['dependency'].append(dependency)
+                        args['label'].append(label_vocab[label])
+                        args['doc'].append(doc)
+                    args = tokenizer(args, model_name, parser_args.mlm_method, parser_args.mlm_prob, parser_args.K_LCA)
+                except:
+                    tokenizer = re_tokenizer
+                    args = {'text': [],
+                            'label': [],
+                            'doc': []}
 
-                args = tokenizer(args, model_name, max_seq_length)
+                    for idx in index_list:
+                        sentence = df['X'][str(idx)][()].decode('UTF-8')
+                        label = df['Y'][str(idx)][()].decode('UTF-8')
+                        doc = doc_index[str(idx)]
 
+                        args['text'].append(sentence)
+                        args['label'].append(label_vocab[label])
+                        args['doc'].append(doc)
+                        unique_docs.add(doc)
+                    args = tokenizer(args, model_name)
 
 
             # specifically for 20news, agnews, sst_2, sentiment140, semeval_2010_task8
             elif task_type == 'text_classification':
-                tokenizer = NLP_tokenizer
-                n_classes = attributes['num_labels']
-                model = SequenceClassificationBert(model_name, n_classes)
-                for idx in df['X'].keys():
-                    sentence = df['X'][idx][()].decode('UTF-8')
-                    data.append(sentence)
+                args = {'text': [],
+                        'label': [],
+                        'doc': []}
 
-                    label = df['Y'][idx][()].decode('UTF-8')
-                    targets.append(label)
-                data = tokenizer(data)
-                targets = np.array([label_vocab[target] for target in targets])
-                args = [data, targets]
+                n_classes = attributes['num_labels']
+                model = SCModel(model_name, n_classes)
+                if parser_args.SCL:
+                    model = SCSCLModel(model_name, n_classes)
+                tokenizer = sc_tokenizer
+                my_train_dataset = my_test_dataset = model.dataset
+
+                for idx in index_list:
+                    sentence = df['X'][str(idx)][()].decode('UTF-8')
+                    args['text'].append(sentence)
+                    label = df['Y'][str(idx)][()].decode('UTF-8')
+                    args['label'].append(label_vocab[label])
+                    doc = doc_index[str(idx)]
+                    args['doc'].append(doc)
+                    unique_docs.add(doc)
+
+                args = tokenizer(args, model_name, max_seq_length)
             else:
                 raise NotImplementedError
 
-            train_args = {k: [v[i] for i in train_idx] for k, v in args.items()}
-            test_args = {k: [v[i] for i in test_idx] for k, v in args.items()}
-            num_train, num_test = len(train_idx), len(test_idx)
+    train_args = {k: [v[i] for i in train_idx] for k, v in args.items()}
+    test_args = {k: [v[i] for i in test_idx] for k, v in args.items()}
+    num_train, num_test = len(train_idx), len(test_idx)
 
     centralized_train_dataset = my_train_dataset(train_args, num_train, n_classes, transform_aug, train_doc_index)
     centralized_test_dataset = my_test_dataset(test_args, num_test, n_classes, transform_normal, test_doc_index)
+    logger.info(f'number of classes: {n_classes}')
+    logger.info(f'number of samples of train/test dataset: {num_train}/{num_test}')
 
     if split_type == 'centralized':
-        logger.info(f'number of classes: {n_classes}')
-        logger.info(f'number of samples of train/test dataset: {num_train}/{num_test}')
         clients = [0]
         train_datasets = {0: centralized_train_dataset}
         test_datasets = {0: centralized_test_dataset}
@@ -281,34 +309,30 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, max_seq_len
             logger.info(f'doc: {d}, number of samples of train/test dataset: {num_train}/{num_test}')
         return clients, train_datasets, test_datasets, centralized_train_dataset, centralized_test_dataset, model, res
     elif split_type == 'label_shift':
-        logger.info('Start splitting data according to label shift.')
-        if n_clusters is None:
-            train_idxes = generate_idxes_dirichlet(train_args[-1], n_clients, n_classes, beta)
-            test_idxes = generate_idxes_dirichlet(test_args[-1], n_clients, n_classes, beta)
+        logger.info('start splitting data according to label shift.')
+        if not parser_args.n_clusters:
+            train_idxes = generate_idxes_dirichlet(train_args['label'], n_clients, n_classes, parser_args.beta)
+            test_idxes = generate_idxes_dirichlet(test_args['label'], n_clients, n_classes, parser_args.beta)
         else:
-            train_idxes = generate_idxes_group(train_args[-1], n_clients, n_classes, beta, n_clients // n_clusters,
-                                               seed)
-            test_idxes = generate_idxes_group(test_args[-1], n_clients, n_classes, beta, n_clients // n_clusters,
-                                              seed)
+            train_idxes = generate_idxes_group(train_args['label'], n_clients, n_classes, parser_args.beta,
+                                               n_clients // parser_args.n_clusters, parser_args.seed)
+            test_idxes = generate_idxes_group(test_args['label'], n_clients, n_classes, parser_args.beta,
+                                              n_clients // parser_args.n_clusters, parser_args.seed)
         for i in range(n_clients):
             train_idx = train_idxes[i]
-            if doc_index is not None:
-                train_doc_index = np.array([doc_index[str(i)] for i in train_idx])
-            train_dataset = my_train_dataset([arg[train_idx] for arg in train_args],
-                                             n_classes, transform_aug, train_doc_index)
+            num_train = len(train_idx)
+            client_train_args = {k: [v[idx] for idx in train_idx] for k, v in train_args.items()}
+            train_dataset = my_train_dataset(client_train_args, num_train, n_classes, transform_aug, train_doc_index)
             train_datasets.update({i: train_dataset})
 
             test_idx = test_idxes[i]
-            if doc_index is not None:
-                test_doc_index = np.array([doc_index[str(i)] for i in test_idx])
-            test_dataset = my_test_dataset([arg[test_idx] for arg in test_args],
-                                           n_classes, transform_normal, test_doc_index)
+            num_test = len(test_idx)
+            client_test_args = {k: [v[idx] for idx in test_idx] for k, v in test_args.items()}
+            test_dataset = my_test_dataset(client_test_args, num_test, n_classes, transform_normal, test_doc_index)
             test_datasets.update({i: test_dataset})
+            logger.info(f'client: {i}, number of samples of train/test dataset: {num_train}/{num_test}')
 
-        logger.info(f'number of classes: {n_classes}')
-        n1, n2 = len(centralized_train_dataset), len(centralized_test_dataset)
-        logger.info(f'number of samples of train/test dataset: {n1}/{n2}')
-        return clients, train_datasets, test_datasets, centralized_train_dataset, centralized_test_dataset, model
+        return clients, train_datasets, test_datasets, centralized_train_dataset, centralized_test_dataset, model, res
     elif split_type == 'feature shift':
         logger.info('Start splitting data according to feature shift.')
         train_idxes, test_idxes = generate_idxes_kmeans(data_file, partition_file, embedding_file, task_type,

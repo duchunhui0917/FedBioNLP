@@ -41,8 +41,8 @@ parser.add_argument('--batch_size', default=32)
 args = parser.parse_args()
 
 base_dir = os.path.expanduser('~/cross_silo_FL')
-if not os.path.exists(os.path.join(base_dir, 'ckpt')):
-    os.mkdir(os.path.join(base_dir, 'ckpt'))
+if not os.path.exists(os.path.join(base_dir, 'g_ckpt')):
+    os.mkdir(os.path.join(base_dir, 'g_ckpt'))
 
 train_dataset, test_dataset, model = process_dataset(args.dataset_name,
                                                      model_name=args.model_name,
@@ -55,7 +55,7 @@ plot_class_samples(distributions)
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-p = f'ckpt/discriminator/{args.dataset_name}'
+p = f'g_ckpt/discriminator/{args.dataset_name}'
 ckpt = os.path.join(base_dir, p)
 cs = CentralizedSystem(train_dataset, test_dataset, model, device, ckpt,
                        n_iterations=args.n_iterations, lr=args.lr, epochs=args.n_epochs, opt=args.opt,
@@ -70,7 +70,7 @@ if args.train:
 
 metric1, inputs1, features1, logits1, labels1 = cs.test_model(visual=True)
 
-ckpt = os.path.join(base_dir, f'ckpt/centralized/AIMed*BioInfer*PGR_Q1*PGR_Q2')
+ckpt = os.path.join(base_dir, f'g_ckpt/centralized/AIMed*BioInfer*PGR_Q1*PGR_Q2')
 print(ckpt)
 cs.load(ckpt)
 metric2, inputs2, features2, logits2, labels2 = cs.test_model(visual=True)

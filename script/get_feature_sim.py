@@ -67,28 +67,28 @@ if args.load_model:
     logging.info('model has been loaded')
     metric, inputs, labels, features, logits = cs.test_model()
 
-    # p = f'ckpt/{args.alg}/AIMed_{model_name}'
-    # ckpt = os.path.join(base_dir, p)
-    # cs.load(ckpt)
-    # print(ckpt)
+    # p = f'g_ckpt/{args.alg}/AIMed_{model_name}'
+    # g_ckpt = os.path.join(base_dir, p)
+    # cs.load(g_ckpt)
+    # print(g_ckpt)
     # print_false()
     #
-    # p = f'ckpt/{args.alg}/BioInfer_{model_name}'
-    # ckpt = os.path.join(base_dir, p)
-    # cs.load(ckpt)
-    # print(ckpt)
+    # p = f'g_ckpt/{args.alg}/BioInfer_{model_name}'
+    # g_ckpt = os.path.join(base_dir, p)
+    # cs.load(g_ckpt)
+    # print(g_ckpt)
     # print_false()
     #
-    # p = f'ckpt/{args.alg}/HPRD50_{model_name}'
-    # ckpt = os.path.join(base_dir, p)
-    # cs.load(ckpt)
-    # print(ckpt)
+    # p = f'g_ckpt/{args.alg}/HPRD50_{model_name}'
+    # g_ckpt = os.path.join(base_dir, p)
+    # cs.load(g_ckpt)
+    # print(g_ckpt)
     # print_false()
     #
-    # p = f'ckpt/{args.alg}/IEPA_{model_name}'
-    # ckpt = os.path.join(base_dir, p)
-    # cs.load(ckpt)
-    # print(ckpt)
+    # p = f'g_ckpt/{args.alg}/IEPA_{model_name}'
+    # g_ckpt = os.path.join(base_dir, p)
+    # cs.load(g_ckpt)
+    # print(g_ckpt)
     # print_false()
     #
     p = f'ckpt/{args.alg}/AIMed_{model_name}'
@@ -147,10 +147,10 @@ if args.load_model:
     print(ckpt)
     metric, inputs, labels, features_PGR_Q1, logits = cs.test_model()
 
-    # p = f'ckpt/FedAvg/AIMed*BioInfer*HPRD50*IEPA*LLL_{model_name}'
-    # ckpt = os.path.join(base_dir, p)
-    # cs.load(ckpt)
-    # print(ckpt)
+    # p = f'g_ckpt/FedAvg/AIMed*BioInfer*HPRD50*IEPA*LLL_{model_name}'
+    # g_ckpt = os.path.join(base_dir, p)
+    # cs.load(g_ckpt)
+    # print(g_ckpt)
     # metric, inputs, labels, features_FedAvg, logits = cs.test_model()
 
     print('AIMed')

@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import random
 import os
+from torch.utils.data.sampler import WeightedRandomSampler
 
 
 def set_seed(seed):
@@ -98,3 +99,13 @@ class AverageMeter(object):
             return str(self.val)
         # for stats
         return '%.4f (%.4f)' % (self.val, self.avg)
+
+
+def ret_sampler(dataset):
+    nums = [0 for _ in range(dataset.n_classes)]
+    for data, label in dataset:
+        nums[int(label[0])] += 1
+    nums = [1 / num for num in nums]
+    weights = [nums[int(label[0])] for data, label in dataset]
+    sampler = WeightedRandomSampler(weights, num_samples=dataset.n_samples, replacement=True)
+    return sampler

@@ -7,9 +7,8 @@ base_dir = os.path.expanduser('~/FedBioNLP')
 nlp = StanfordCoreNLP(os.path.join(base_dir, 'stanford-corenlp-4.4.0'))
 # nlp = StanfordCoreNLP('http://localhost', port=9000)  #通过服务器访问
 
-sentence = 'ROTEIN1 or TPA-induced activation and tyrosine phosphorylation of p42 MAPK were completely blocked by down-regulation of PROTEIN2 betaI, epsilon, and delta, but still occurred, together with the cytosolic PLA2 mobility shift, in the absence of external Ca2+'
+sentence = 'The results show that Protein1 and Protein2 form a complex and suggest that they participate in epithelial cell differentiation in the developing kidney.'
 
-sentence = ['i', 'like', 'you']
 print('Tokenize:', nlp.word_tokenize(sentence))  # 令牌化
 print('Part of Speech:', nlp.pos_tag(sentence))  # 词性标注
 print('Named Entities:', nlp.ner(sentence))  # 命名实体

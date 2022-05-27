@@ -105,22 +105,22 @@ if args.load_model:
     cs.load(ckpt)
     model_AIMed_797_FedAvg = copy.deepcopy(cs.model)
 
-    # p = f'ckpt/{args.alg}/BioInfer_{model_name}'
-    # ckpt = os.path.join(base_dir, p)
-    # print(ckpt)
-    # cs.load(ckpt)
+    # p = f'g_ckpt/{args.alg}/BioInfer_{model_name}'
+    # g_ckpt = os.path.join(base_dir, p)
+    # print(g_ckpt)
+    # cs.load(g_ckpt)
     # model_BioInfer = copy.deepcopy(cs.model)
 
-    # p = f'ckpt/{args.alg}/HPRD50_{model_name}'
-    # ckpt = os.path.join(base_dir, p)
-    # print(ckpt)
-    # cs.load(ckpt)
+    # p = f'g_ckpt/{args.alg}/HPRD50_{model_name}'
+    # g_ckpt = os.path.join(base_dir, p)
+    # print(g_ckpt)
+    # cs.load(g_ckpt)
     # model_HPRD50 = copy.deepcopy(cs.model)
 
-    # p = f'ckpt/{args.alg}/IEPA_{model_name}'
-    # ckpt = os.path.join(base_dir, p)
-    # print(ckpt)
-    # cs.load(ckpt)
+    # p = f'g_ckpt/{args.alg}/IEPA_{model_name}'
+    # g_ckpt = os.path.join(base_dir, p)
+    # print(g_ckpt)
+    # cs.load(g_ckpt)
     # model_IEPA = copy.deepcopy(cs.model)
 
     p = f'ckpt/{args.alg}/LLL_{model_name}'

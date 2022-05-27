@@ -135,13 +135,19 @@ class GraphConvolution(nn.Module):
             init.uniform_(self.bias, -bound, bound)
 
     def forward(self, text, adj):
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
         hidden = torch.matmul(text.float(), self.weight.float())
-        denom = torch.sum(adj, dim=2, keepdim=True) + 1
-        output = torch.matmul(adj.float(), hidden) / denom
+        degree = torch.sum(adj, dim=2, keepdim=True)
+        degree = degree | torch.ones_like(degree).to(device)
+        adj = adj.type(torch.float)
+        adj /= degree
+
+        output = torch.matmul(adj, hidden)
         if self.bias is not None:
             output = output + self.bias
 
-        return F.relu(output.type_as(text))
+        return F.relu(output)
 
 
 class TypeGraphConvolution(nn.Module):

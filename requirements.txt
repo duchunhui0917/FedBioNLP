@@ -18,3 +18,4 @@ spacy
 entmax
 stanfordcorenlp
 googletrans
+tokenizers

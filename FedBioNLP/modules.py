@@ -7,6 +7,10 @@ from transformers import AutoModel, AutoConfig
 from transformers import DistilBertModel, DistilBertPreTrainedModel, PretrainedConfig
 from transformers.activations import get_activation
 from typing import Optional, Tuple, Union
+import math
+import torch
+from torch import nn
+from scipy.special import binom
 
 
 class MMDLoss(nn.Module):
@@ -203,10 +207,9 @@ class DistilBertForMaskedLM(DistilBertPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-        # last_hidden_states = dlbrt_output[0]  # (bs, seq_length, dim)
-        hidden_states = dlbrt_output[1]  # (bs, seq_length, dim)
-        layer1_hidden_states = hidden_states[2]
-        prediction_logits = self.vocab_transform(layer1_hidden_states)  # (bs, seq_length, dim)
+        hidden_states = dlbrt_output.hidden_states
+        last_hidden_states = dlbrt_output.hidden_states[-1]  # (bs, seq_length, dim)
+        prediction_logits = self.vocab_transform(last_hidden_states)  # (bs, seq_length, dim)
         prediction_logits = self.activation(prediction_logits)  # (bs, seq_length, dim)
         prediction_logits = self.vocab_layer_norm(prediction_logits)  # (bs, seq_length, dim)
         prediction_logits = self.vocab_projector(prediction_logits)  # (bs, seq_length, vocab_size)
@@ -225,3 +228,180 @@ class DistilBertForMaskedLM(DistilBertPreTrainedModel):
             hidden_states=dlbrt_output.hidden_states,
             attentions=dlbrt_output.attentions,
         )
+
+
+# class SupConLoss(nn.Module):
+#     def __init__(self, temperature=0.07):
+#         super(SupConLoss, self).__init__()
+#         self.temperature = temperature
+#
+#     def forward(self, features, labels):
+#         features = F.normalize(features, dim=1)
+#
+#         batch_size = features.shape[0]
+#
+#         labels = labels.contiguous().view(-1, 1)
+#         mask = torch.eq(labels, labels.T).float()
+#
+#         # compute logits
+#         anchor_dot_contrast = torch.div(
+#             torch.matmul(features, features.T),
+#             self.temperature)
+#         # for numerical stability
+#         logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+#         logits = anchor_dot_contrast - logits_max.detach()
+#
+#         # mask-out self-contrast cases
+#         logits_mask = torch.scatter(
+#             torch.ones_like(mask),
+#             1,
+#             torch.arange(batch_size).view(-1, 1).cuda(),
+#             0
+#         )
+#         mask = mask * logits_mask
+#
+#         # compute log_prob
+#         exp_logits = torch.exp(logits) * logits_mask
+#         log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
+#
+#         # loss
+#         loss = - (mask * log_prob).sum(1) / mask.sum(1)
+#         loss = loss.mean()
+#
+#         return loss
+
+
+def SupConLoss(features, labels):
+    temperature = 0.07
+    ent_norm = F.normalize(features, dim=1)
+    ent_pie = torch.transpose(ent_norm, 0, 1)
+
+    cos = torch.matmul(ent_norm, ent_pie)
+    exp_cos = torch.exp(cos / temperature)
+    log_exp_cos = - torch.log(exp_cos / (torch.sum(exp_cos, dim=1) - torch.diag(exp_cos)))
+
+    equal = torch.zeros_like(log_exp_cos)
+
+    for i in range(len(equal)):
+        idx = torch.where(labels == labels[i])[0]
+        if len(idx) > 1:
+            equal[i][idx] = 1 / (len(idx) - 1)
+            equal[i][i] = 0
+
+    cls = log_exp_cos * equal
+    cls = cls.sum(1).mean()
+    return cls
+
+
+class LSoftmaxLinear(nn.Module):
+
+    def __init__(self, input_features, output_features, margin):
+        super(LSoftmaxLinear, self).__init__()
+        self.input_dim = input_features  # number of input feature i.e. output of the last fc layer
+        self.output_dim = output_features  # number of output = class numbers
+        self.margin = margin  # m
+        self.beta = 100
+        self.beta_min = 0
+        self.scale = 0.99
+
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Initialize L-Softmax parameters
+        self.weight = nn.Parameter(torch.FloatTensor(input_features, output_features))
+        self.divisor = math.pi / self.margin  # pi/m
+        self.C_m_2n = torch.Tensor(binom(margin, range(0, margin + 1, 2))).to(device)  # C_m{2n}
+        self.cos_powers = torch.Tensor(range(self.margin, -1, -2)).to(device)  # m - 2n
+        self.sin2_powers = torch.Tensor(range(len(self.cos_powers))).to(device)  # n
+        self.signs = torch.ones(margin // 2 + 1).to(device)  # 1, -1, 1, -1, ...
+        self.signs[1::2] = -1
+
+    def calculate_cos_m_theta(self, cos_theta):
+        sin2_theta = 1 - cos_theta ** 2
+        cos_terms = cos_theta.unsqueeze(1) ** self.cos_powers.unsqueeze(0)  # cos^{m - 2n}
+        sin2_terms = (sin2_theta.unsqueeze(1)  # sin2^{n}
+                      ** self.sin2_powers.unsqueeze(0))
+
+        cos_m_theta = (self.signs.unsqueeze(0) *  # -1^{n} * C_m{2n} * cos^{m - 2n} * sin2^{n}
+                       self.C_m_2n.unsqueeze(0) *
+                       cos_terms *
+                       sin2_terms).sum(1)  # summation of all terms
+
+        return cos_m_theta
+
+    def reset_parameters(self):
+        nn.init.kaiming_normal_(self.weight.data.t())
+
+    def find_k(self, cos):
+        # to account for acos numerical errors
+        eps = 1e-7
+        cos = torch.clamp(cos, -1 + eps, 1 - eps)
+        acos = cos.acos()
+        k = (acos / self.divisor).floor().detach()
+        return k
+
+    def forward(self, input, target=None):
+        if self.training:
+            assert target is not None
+            x, w = input, self.weight
+            beta = max(self.beta, self.beta_min)
+            logit = x.mm(w)
+            indexes = range(logit.size(0))
+            logit_target = logit[indexes, target]
+
+            # cos(theta) = w * x / ||w||*||x||
+            w_target_norm = w[:, target].norm(p=2, dim=0)
+            x_norm = x.norm(p=2, dim=1)
+            cos_theta_target = logit_target / (w_target_norm * x_norm + 1e-10)
+
+            # equation 7
+            cos_m_theta_target = self.calculate_cos_m_theta(cos_theta_target)
+
+            # find k in equation 6
+            k = self.find_k(cos_theta_target)
+
+            # f_y_i
+            logit_target_updated = (w_target_norm *
+                                    x_norm *
+                                    (((-1) ** k * cos_m_theta_target) - 2 * k))
+            logit_target_updated_beta = (logit_target_updated + beta * logit[indexes, target]) / (1 + beta)
+
+            logit[indexes, target] = logit_target_updated_beta
+            self.beta *= self.scale
+            return logit
+        else:
+            return input.mm(self.weight)
+
+
+def valid_filter(sequence, valid_ids):
+    """
+
+    Args:
+        sequence: (B, L, H)
+        valid_ids: (B, L, H)
+
+    Returns:
+
+    """
+    batch_size, max_len, hidden_dim = sequence.shape
+    valid_output = torch.zeros(batch_size, max_len, hidden_dim,
+                               dtype=sequence.dtype,
+                               device=sequence.device)
+    for i in range(batch_size):
+        tmp = sequence[i][valid_ids[i] == 1]  # (L, H)
+        valid_output[i][:tmp.size(0)] = tmp
+    return valid_output
+
+
+def max_pooling(sequence, e_mask):
+    """
+
+    Args:
+        sequence: (B, L, H)
+        e_mask: (B, L, H)
+
+    Returns:
+
+    """
+    entity_output = sequence * torch.stack([e_mask] * sequence.shape[-1], 2) + torch.stack(
+        [(1.0 - e_mask) * -1000.0] * sequence.shape[-1], 2)
+    entity_output = torch.max(entity_output, -2)[0]
+    return entity_output.type_as(sequence)

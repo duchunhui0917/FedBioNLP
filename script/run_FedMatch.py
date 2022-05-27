@@ -48,8 +48,8 @@ parser.add_argument('--batch_size', default=32)
 args = parser.parse_args()
 
 base_dir = os.path.expanduser('~/FedBioNLP')
-if not os.path.exists(os.path.join(base_dir, 'ckpt')):
-    os.mkdir(os.path.join(base_dir, 'ckpt'))
+if not os.path.exists(os.path.join(base_dir, 'g_ckpt')):
+    os.mkdir(os.path.join(base_dir, 'g_ckpt'))
 
 res = process_dataset(args.dataset_name,
                       args.n_clients,
@@ -63,7 +63,7 @@ doc_index = test_dataset.doc_index
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-p = f'ckpt/{args.alg}/{args.dataset_name}'
+p = f'g_ckpt/{args.alg}/{args.dataset_name}'
 ckpt = os.path.join(base_dir, p)
 cs = PersonalizedFLSystem(client_ids, train_datasets, test_datasets, train_dataset, test_dataset,
                           model, device, ckpt,

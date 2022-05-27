@@ -37,7 +37,7 @@ class BaseClient(object):
         else:
             raise Exception("Invalid optimizer. Must be 'SGD' or 'Adam'.")
 
-    def train_model(self):
+    def train_model(self, ite=None):
         model = nn.parallel.DataParallel(self.model)
         model.cuda()
         model.train()
@@ -61,7 +61,10 @@ class BaseClient(object):
                 inputs, labels = [x.cuda() for x in inputs], [x.cuda() for x in labels]
 
                 with torch.autograd.detect_anomaly():
-                    features, logits, losses = model(inputs, labels)
+                    if ite is not None:
+                        features, logits, losses = model(inputs, labels, ite)
+                    else:
+                        features, logits, losses = model(inputs, labels)
                     losses[0].mean().backward()
                 self.optimizer.step()
 
@@ -83,7 +86,10 @@ class BaseClient(object):
                     d.update({f'loss{idx}': avg_loss.avg})
 
                 t.set_postfix(d)
+            for key, val in d.items():
+                logger.info(f'{key}: {val:.4f}')
         self.model.to('cpu')
+        self.alpha = 0
         return self.model.state_dict()
 
     def receive_global_model(self, global_model_dict):

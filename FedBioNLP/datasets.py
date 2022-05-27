@@ -1,5 +1,6 @@
 import json
 
+import torch
 from torch.utils.data import Dataset
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
 import logging
@@ -204,17 +205,36 @@ class REGCNDataset(BaseDataset):
         return data, label
 
 
+class SCDataset(BaseDataset):
+    def __init__(self, args, n_samples, n_classes=None, transform=None, doc_index=None):
+        super(SCDataset, self).__init__(args, n_samples, n_classes, transform, doc_index)
+        self.input_ids = torch.LongTensor(args['input_ids'])
+        self.attention_mask = torch.LongTensor(args['attention_mask'])
+        self.label = torch.LongTensor(args['label'])
+
+    def __getitem__(self, item):
+        data = [self.input_ids[item], self.attention_mask[item]]
+        label = [self.label[item]]
+        return data, label
+
+
 class REDataset(BaseDataset):
     def __init__(self, args, n_samples, n_classes=None, transform=None, doc_index=None):
         super(REDataset, self).__init__(args, n_samples, n_classes, transform, doc_index)
         self.input_ids = torch.LongTensor(args['input_ids'])
-        self.input_mask = torch.LongTensor(args['input_mask'])
+        self.attention_mask = torch.LongTensor(args['attention_mask'])
         self.e1_mask = torch.LongTensor(args['e1_mask'])
         self.e2_mask = torch.LongTensor(args['e2_mask'])
         self.label = torch.LongTensor(args['label'])
 
+        zero = torch.zeros_like(self.input_ids)
+        self.mlm_input_ids = torch.LongTensor(args['mlm_input_ids']) if 'mlm_input_ids' in args else zero
+        self.valid_ids = torch.LongTensor(args['valid_ids']) if 'valid_ids' in args else zero
+        self.dep_matrix = torch.LongTensor(args['dep_matrix']) if 'dep_matrix' in args else zero
+
     def __getitem__(self, item):
-        data = [self.input_ids[item], self.input_mask[item], self.e1_mask[item], self.e2_mask[item]]
+        data = [self.input_ids[item], self.attention_mask[item], self.e1_mask[item], self.e2_mask[item],
+                self.mlm_input_ids[item], self.valid_ids[item], self.dep_matrix[item]]
         label = [self.label[item]]
         return data, label
 
