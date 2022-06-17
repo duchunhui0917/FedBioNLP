@@ -24,7 +24,7 @@ parser.add_argument('--case_study', default=False)
 
 # common FL hyperparameters
 parser.add_argument('--dataset_name', type=str,
-                    default='PGR_Q1',
+                    default='20news_115',
                     choices=['MNIST', 'CIFAR10', 'CIFAR100',
                              '20news', 'agnews', 'sst_2', 'sentiment140',
                              'GAD', 'EU-ADR', 'PGR_Q1', 'PGR_Q2', 'CoMAGC', 'PolySearch',
@@ -35,8 +35,8 @@ parser.add_argument('--dataset_name', type=str,
                              'cnn_dailymail', 'cornell_movie_dialogue',
                              'Books*Electronics*Home_&_Kitchen*Movies_&_TV'
                              ])
-parser.add_argument('--alg', type=str, default='FedAvg')
-parser.add_argument('--split_type', default='label_split',
+parser.add_argument('--alg', type=str, default='centralized')
+parser.add_argument('--split_type', default='centralized',
                     choices=['centralized', 'doc_split', 'label_split', 'feature_split'])
 parser.add_argument('--beta', type=int, default=0.5)
 parser.add_argument('--n_clients', type=int, default=10)
@@ -57,7 +57,7 @@ parser.add_argument('--vocab_file', default=os.path.join(base_dir, 'data/glove.6
 
 # training hyperparameters
 parser.add_argument('--lr', type=float, default=1e-5)
-parser.add_argument('--model_name', type=str, default='allenai/scibert_scivocab_cased',
+parser.add_argument('--model_name', type=str, default='bert-base-cased',
                     choices=['CNN',
                              'LSTM',
                              'distilbert-base-cased',
@@ -67,13 +67,13 @@ parser.add_argument('--model_name', type=str, default='allenai/scibert_scivocab_
                              'dmis-lab/biobert-v1.1',
                              'allenai/scibert_scivocab_cased',
                              'emilyalsentzer/Bio_ClinicalBERT'])
-parser.add_argument('--load_pretrain', default=True)
+parser.add_argument('--load_pretrain', default=False)
 parser.add_argument('--n_iterations', type=int, default=100)
-parser.add_argument('--n_epochs', default=5)
+parser.add_argument('--n_epochs', default=1)
 parser.add_argument('--n_batches', default=0)
 parser.add_argument('--opt', default='AdamW',
                     choices=['SGD', 'AdamW', 'WPOptim'])
-parser.add_argument('--batch_size', default=8)
+parser.add_argument('--batch_size', default=16)
 parser.add_argument('--weight_sampler', default=False)
 
 
@@ -157,7 +157,7 @@ def run():
         system = HarmoFL
     elif args.alg == 'PartialFL':
         system = PartialFL
-        args.personal_keys = ['.']
+        args.personal_keys = ['classifier']
     elif args.alg == 'GSN':
         system = GSN
         args.mu = 0

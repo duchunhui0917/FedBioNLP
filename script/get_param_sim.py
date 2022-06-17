@@ -21,8 +21,8 @@ parser.add_argument('--GRL', default=False)
 parser.add_argument('--MaskedLM', default=False)
 args = parser.parse_args()
 
-layers = ['encoder', 'classifier']
-layers = ['embedding', 'layer.0', 'layer.1', 'layer.2', 'layer.3', 'layer.4', 'layer.5', 'classifier']
+layers = ['re_encoder', 're_classifier']
+layers = ['embedding', 'layer.0', 'layer.1', 'layer.2', 'layer.3', 'layer.4', 'layer.5', 're_classifier']
 
 
 def get_grad_cosine(state_dicts):

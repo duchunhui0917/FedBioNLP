@@ -1,7 +1,7 @@
 import os
 
 n_clients = 2
-layers = '.*embedding*layer.0*layer.1*layer.2*layer.3*layer.4*layer.5*classifier'
+layers = '.*embedding*layer.0*layer.1*layer.2*layer.3*layer.4*layer.5*re_classifier'
 layers = layers.split('*')
 dataset = 'AIMed_1|2*AIMed_2|2_back_translate'
 model = 'distilbert-base-cased'

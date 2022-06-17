@@ -24,7 +24,7 @@ parser.add_argument('--case_study', default=False)
 
 # common FL hyperparameters
 parser.add_argument('--dataset_name', type=str,
-                    default='PGR_Q1',
+                    default='20news_115',
                     choices=['MNIST', 'CIFAR10', 'CIFAR100',
                              '20news', 'agnews', 'sst_2', 'sentiment140',
                              'GAD', 'EU-ADR', 'PGR_Q1', 'PGR_Q2', 'CoMAGC', 'PolySearch',
@@ -57,7 +57,7 @@ parser.add_argument('--vocab_file', default=os.path.join(base_dir, 'data/glove.6
 
 # training hyperparameters
 parser.add_argument('--lr', type=float, default=1e-5)
-parser.add_argument('--model_name', type=str, default='allenai/scibert_scivocab_cased',
+parser.add_argument('--model_name', type=str, default='dmis-lab/biobert-v1.1',
                     choices=['CNN',
                              'LSTM',
                              'distilbert-base-cased',
@@ -69,11 +69,11 @@ parser.add_argument('--model_name', type=str, default='allenai/scibert_scivocab_
                              'emilyalsentzer/Bio_ClinicalBERT'])
 parser.add_argument('--load_pretrain', default=True)
 parser.add_argument('--n_iterations', type=int, default=100)
-parser.add_argument('--n_epochs', default=5)
+parser.add_argument('--n_epochs', default=10)
 parser.add_argument('--n_batches', default=0)
 parser.add_argument('--opt', default='AdamW',
                     choices=['SGD', 'AdamW', 'WPOptim'])
-parser.add_argument('--batch_size', default=8)
+parser.add_argument('--batch_size', default=4)
 parser.add_argument('--weight_sampler', default=False)
 
 
@@ -157,7 +157,7 @@ def run():
         system = HarmoFL
     elif args.alg == 'PartialFL':
         system = PartialFL
-        args.personal_keys = ['.']
+        args.personal_keys = ['classifier']
     elif args.alg == 'GSN':
         system = GSN
         args.mu = 0

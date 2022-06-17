@@ -9,29 +9,31 @@ from sklearn.cluster import KMeans
 import json
 import h5py
 import pickle
+import logging
+
+logger = logging.getLogger(os.path.basename(__file__))
 
 
-def get_embedding_Kmeans(embedding_exist, corpus, n_clients, bsz=16):
-    embedding_data = {}
-    corpus_embeddings = []
-    if embedding_exist == False:
-        embedder = SentenceTransformer('distilbert-base-nli-stsb-mean-tokens', device='cuda:0')  # server only
-        corpus_embeddings = embedder.encode(corpus, show_progress_bar=True,
-                                            batch_size=bsz)  # smaller batch size for gpu
+def get_embedding_Kmeans(text, n_clients, path, bsz=16):
+    if os.path.exists(path):
+        with open(path, 'rb') as f:
+            embeddings = pickle.load(f)
+        logger.info('embedding has been loaded')
 
-        embedding_data['data'] = corpus_embeddings
     else:
-        corpus_embeddings = corpus
-    ### KMEANS clustering
-    print("start Kmeans")
-    num_clusters = n_clients
-    clustering_model = KMeans(n_clusters=num_clusters)
-    clustering_model.fit(corpus_embeddings)
-    cluster_assignment = clustering_model.labels_
-    print("end Kmeans")
-    # TODO: read the center points
+        embedder = SentenceTransformer('distilbert-base-nli-stsb-mean-tokens', device='cuda:0')
+        embeddings = embedder.encode(text, show_progress_bar=True, batch_size=bsz)
 
-    return cluster_assignment, embedding_data
+        with open(path, 'wb') as f:
+            pickle.dump(embeddings, f)
+        logger.info('embedding has been dumped')
+
+    print("start kmeans embedding")
+    clustering_model = KMeans(n_clusters=n_clients)
+    clustering_model.fit(embeddings)
+    cluster_assignment = clustering_model.labels_
+
+    return cluster_assignment
 
 
 def cmp_param_inner_prod(param1, param2):
@@ -128,116 +130,6 @@ def generate_idxes_group(targets, n_clients, n_classes, beta, n_groups, seed):
     cur_idxes = [[idx + (n_groups - 1) * targets_per_cluster for idx in cur_idx] for cur_idx in cur_idxes]
     idxes.extend(cur_idxes)
     return idxes
-
-
-def generate_idxes_kmeans(data_file, partition_file, embedding_file, task_type, n_clients, bsz=16):
-    with h5py.File(partition_file, "a") as partition:
-        if f'/kmeans_clusters={n_clients}' not in partition:
-            print("start reading data")
-            with h5py.File(data_file, "r") as f:
-                attributes = json.loads(f["attributes"][()])
-                print(attributes.keys())
-                total_index_list = attributes['index_list']
-                if "train_index_list" in attributes:
-                    train_index_list = attributes['train_index_list']
-                    test_index_list = attributes['test_index_list']
-                else:
-                    split_point = int(len(total_index_list) * 0.8)
-                    random.shuffle(total_index_list)
-                    train_index_list, test_index_list = total_index_list[:split_point], total_index_list[split_point:]
-                    attributes['train_index_list'] = train_index_list
-                    attributes['test_index_list'] = test_index_list
-
-                print(len(total_index_list), len(train_index_list), len(test_index_list))
-
-                corpus = []
-                if task_type == 'name_entity_recognition':  # specifically wnut and wikiner datesets
-                    for i in f['X'].keys():
-                        sentence = f['X'][i][()]
-                        sentence = [i.decode('UTF-8') for i in sentence]
-                        corpus.append(" ".join(sentence))
-
-                elif task_type == 'reading_comprehension':  # specifically Squad1.1 dataset
-                    for i in f['context_X'].keys():
-                        question_components = []
-                        # context = f['context_X'][i][()].decode('UTF-8')
-                        question = f['question_X'][i][()].decode('UTF-8')
-                        answer_start = f['Y'][i][()][0]
-                        answer_end = f['Y'][i][()][1]
-                        answer = f['context_X'][i][()].decode('UTF-8')[answer_start: answer_end]
-
-                        question_components.append(question)
-                        question_components.append(answer)
-                        corpus.append(" ".join(question_components))
-
-                elif task_type == 'sequence_to_sequence':
-                    for i in f['Y'].keys():
-                        sentence = f['Y'][i][()].decode('UTF-8')
-                        corpus.append(sentence)
-                else:
-                    for i in f['X'].keys():
-                        sentence = f['X'][i][()].decode('UTF-8')
-                        corpus.append(sentence)
-
-            print("start process embedding data and kmeans partition")
-            if os.path.exists(embedding_file) == False:
-                cluster_assignment, corpus_embedding = get_embedding_Kmeans(False, corpus, n_clients, bsz)
-                embedding_data = {}
-                embedding_data['data'] = corpus_embedding
-                with open(embedding_file, 'wb') as f:
-                    pickle.dump(embedding_data, f, pickle.HIGHEST_PROTOCOL)
-            else:
-                with open(embedding_file, 'rb') as f:
-                    embedding_data = pickle.load(f)
-                    embedding_data = embedding_data['data']
-                    if isinstance(embedding_data, dict):
-                        embedding_data = embedding_data['data']
-                    cluster_assignment, corpus_embedding = get_embedding_Kmeans(True, embedding_data, n_clients, bsz)
-
-            print("start insert data")
-            partition_pkl_train = {}
-            partition_pkl_test = {}
-
-            for cluster_id in range(n_clients):
-                partition_pkl_train[cluster_id] = []
-                partition_pkl_test[cluster_id] = []
-
-            for index in train_index_list:
-                idx = cluster_assignment[index]
-                if idx in partition_pkl_train:
-                    partition_pkl_train[idx].append(index)
-                else:
-                    partition_pkl_train[idx] = [index]
-
-            for index in test_index_list:
-                idx = cluster_assignment[index]
-                if idx in partition_pkl_test:
-                    partition_pkl_test[idx].append(index)
-                else:
-                    partition_pkl_test[idx] = [index]
-
-            print("Store kmeans partition to file.")
-            partition[f'/kmeans_clusters={n_clients}/n_clients'] = n_clients
-            partition[f'/kmeans_clusters={n_clients}/client_assignment'] = cluster_assignment
-
-            for i in sorted(partition_pkl_train.keys()):
-                train_path = f'/kmeans_clusters={n_clients}/partition_index/{i}/train/'
-                test_path = f'/kmeans_clusters={n_clients}/partition_index/{i}/test/'
-                train = partition_pkl_train[i]
-                test = partition_pkl_test[i]
-                partition[train_path] = train
-                partition[test_path] = test
-
-        # partition exists in the file
-        train_idxes = []
-        test_idxes = []
-        for i in range(n_clients):
-            train_path = f'/kmeans_clusters={n_clients}/partition_index/{i}/train/'
-            test_path = f'/kmeans_clusters={n_clients}/partition_index/{i}/test/'
-            train_idxes.append(partition[train_path][()])
-            test_idxes.append(partition[test_path][()])
-
-        return train_idxes, test_idxes
 
 
 class BatchIterator:

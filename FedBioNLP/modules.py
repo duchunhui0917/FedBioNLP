@@ -6,7 +6,8 @@ from transformers.modeling_outputs import MaskedLMOutput
 from transformers import AutoModel, AutoConfig
 from transformers import DistilBertModel, DistilBertPreTrainedModel, PretrainedConfig
 from transformers.activations import get_activation
-from typing import Optional, Tuple, Union
+from transformers import AutoModelForMaskedLM
+from typing import Optional, Tuple, Union, Any
 import math
 import torch
 from torch import nn
@@ -26,7 +27,7 @@ class MMDLoss(nn.Module):
     loss: MMD loss
     '''
 
-    def __init__(self, kernel_type='rbf', kernel_mul=2.0, kernel_num=5, fix_sigma=None, **kwargs):
+    def __init__(self, kernel_type='linear', kernel_mul=2.0, kernel_num=5, fix_sigma=None, **kwargs):
         super(MMDLoss, self).__init__()
         self.kernel_num = kernel_num
         self.kernel_mul = kernel_mul
@@ -72,6 +73,22 @@ class MMDLoss(nn.Module):
             return loss
 
 
+class GRL(torch.autograd.Function):
+    @staticmethod
+    def jvp(ctx: Any, *grad_inputs: Any) -> Any:
+        pass
+
+    @staticmethod
+    def forward(ctx, x, lambda_):
+        ctx.lambda_ = lambda_
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_output *= -ctx.lambda_
+        return grad_output, None
+
+
 class GRLFunc(torch.autograd.Function):
     def __init__(self):
         super(GRLFunc, self).__init__()
@@ -83,14 +100,15 @@ class GRLFunc(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
+        # print('gradient reverse')
         lambda_, = ctx.saved_variables
         grad_input = grad_output.clone()
         return - lambda_ * grad_input, None
 
 
-class GRL(nn.Module):
+class GRLModule(nn.Module):
     def __init__(self, lambda_=0.):
-        super(GRL, self).__init__()
+        super(GRLModule, self).__init__()
         self.lambda_ = torch.tensor(lambda_)
 
     def set_lambda(self, lambda_):
@@ -154,6 +172,9 @@ class DistilBertForMaskedLM(DistilBertPreTrainedModel):
 
         self.mlm_loss_fct = nn.CrossEntropyLoss()
 
+        for param in self.distilbert.parameters():
+            param.requires_grad = True
+
     def get_position_embeddings(self) -> nn.Embedding:
         """
         Returns the position embeddings
@@ -207,9 +228,9 @@ class DistilBertForMaskedLM(DistilBertPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-        hidden_states = dlbrt_output.hidden_states
-        last_hidden_states = dlbrt_output.hidden_states[-1]  # (bs, seq_length, dim)
-        prediction_logits = self.vocab_transform(last_hidden_states)  # (bs, seq_length, dim)
+        last_hidden_state = dlbrt_output.last_hidden_state  # (bs, seq_length, dim)
+
+        prediction_logits = self.vocab_transform(last_hidden_state)  # (bs, seq_length, dim)
         prediction_logits = self.activation(prediction_logits)  # (bs, seq_length, dim)
         prediction_logits = self.vocab_layer_norm(prediction_logits)  # (bs, seq_length, dim)
         prediction_logits = self.vocab_projector(prediction_logits)  # (bs, seq_length, vocab_size)
@@ -228,6 +249,33 @@ class DistilBertForMaskedLM(DistilBertPreTrainedModel):
             hidden_states=dlbrt_output.hidden_states,
             attentions=dlbrt_output.attentions,
         )
+
+
+class MaskedLMClassifier(nn.Module):
+    def __init__(self, config):
+        super(MaskedLMClassifier, self).__init__()
+        model = AutoModelForMaskedLM.from_pretrained('distilbert-base-cased')
+        self.activation = model.activation
+        self.vocab_transform = model.vocab_transform
+        self.vocab_layer_norm = model.vocab_layer_norm
+        self.vocab_projector = model.vocab_projector
+        self.mlm_loss_fct = model.mlm_loss_fct
+
+        # self.activation = get_activation(config.activation)
+        # self.vocab_transform = nn.Linear(config.dim, config.dim)
+        # self.vocab_layer_norm = nn.LayerNorm(config.dim, eps=1e-12)
+        # self.vocab_projector = nn.Linear(config.dim, config.vocab_size)
+        # self.mlm_loss_fct = nn.CrossEntropyLoss()
+
+    def forward(self, labels, hidden_state):
+        logits = self.vocab_transform(hidden_state)  # (bs, seq_length, dim)
+        logits = self.activation(logits)  # (bs, seq_length, dim)
+        logits = self.vocab_layer_norm(logits)  # (bs, seq_length, dim)
+        logits = self.vocab_projector(logits)  # (bs, seq_length, vocab_size)
+
+        loss = self.mlm_loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+
+        return logits, loss
 
 
 # class SupConLoss(nn.Module):
@@ -405,3 +453,57 @@ def max_pooling(sequence, e_mask):
         [(1.0 - e_mask) * -1000.0] * sequence.shape[-1], 2)
     entity_output = torch.max(entity_output, -2)[0]
     return entity_output.type_as(sequence)
+
+
+class InfoNCE(nn.Module):
+    def __init__(self, temperature=0.05):
+        super(InfoNCE, self).__init__()
+        self.temperature = temperature
+
+    def forward(self, h1, h2):
+        pos_sim = F.cosine_similarity(h1, h2, dim=-1)
+        pos_sim = torch.exp(pos_sim / self.temperature)
+        return pos_sim
+
+
+class MyLSTM(nn.Module):
+    def __init__(self):
+        super(MyLSTM, self).__init__()
+        self.embedding = nn.Embedding(num_embeddings=10002, embedding_dim=100)
+        bidirectional = True
+        self.lstm = nn.LSTM(input_size=100, hidden_size=670, num_layers=2, batch_first=True,
+                            bidirectional=bidirectional)
+        self.l1 = nn.Linear(670, 100)
+
+    def forward(self, x, output_hidden_states=False):
+        try:
+            x = self.embedding(x)
+        except:
+            pass
+        output, (h_n, c_n) = self.lstm(x)
+        x = torch.mean(h_n, dim=0)
+        x = F.relu(self.l1(x))
+        if output_hidden_states:
+            return x, output
+        else:
+            return x
+
+
+class NERLSTM(nn.Module):
+    def __init__(self):
+        super(NERLSTM, self).__init__()
+        self.embedding = nn.Embedding(num_embeddings=10002, embedding_dim=100)
+        bidirectional = True
+        self.lstm = nn.LSTM(input_size=100, hidden_size=670, num_layers=2, batch_first=True,
+                            bidirectional=bidirectional)
+        b = 2 if bidirectional else 1
+        self.l1 = nn.Linear(670 * b, 100)
+
+    def forward(self, x):
+        try:
+            x = self.embedding(x)
+        except:
+            pass
+        output, (h_n, c_n) = self.lstm(x)
+        output = F.relu(self.l1(output))
+        return output

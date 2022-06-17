@@ -1,10 +1,16 @@
 import copy
+import gc
 import json
+import random
+
 from .clients import *
 import numpy as np
 from torch.utils.data import DataLoader
-from .utils.status_utils import tensor_cos_sim
+from torch.utils.data.sampler import SubsetRandomSampler
+from .utils.status_utils import tensor_cos_sim, cmp_cosine_euclidean
 from .utils.common_utils import ret_sampler
+from .tokenizers import re_tokenizer
+from .datasets import REDataset
 
 logger = logging.getLogger(os.path.basename(__file__))
 
@@ -30,38 +36,53 @@ class Base(object):
         self.n_batches = args.n_batches
         self.opt = args.opt
         self.g_best_metric = 0
+        self.p_best_metric = 0
         self.c_best_metric = 0
         self.ckpt = args.ckpt
         self.g_ckpt = f'{self.ckpt}_global'
         self.c_ckpt = f'{self.ckpt}_central'
+        self.p_ckpts = [f'{self.ckpt}_client{i}' for i in range(self.n_clients)]
 
-        if args.weight_sampler:
-            self.train_loaders = [
-                DataLoader(v, batch_size=self.batch_size[k], drop_last=True, sampler=ret_sampler(v))
-                for k, v in train_datasets.items()
-            ]
-        else:
-            self.train_loaders = [
-                DataLoader(v, batch_size=self.batch_size[k], shuffle=True, drop_last=True)
-                for k, v in train_datasets.items()
-            ]
+        self.save_central = args.save_central
+        self.save_global = args.save_global
+        self.save_personal = args.save_personal
+        self.p_best_metrics = [0 for _ in range(self.n_clients)]
 
-        self.test_loaders = [DataLoader(v, batch_size=self.default_batch_size)
-                             for k, v in test_datasets.items()]
-        if args.weight_sampler:
-            sampler = ret_sampler(train_dataset)
-            self.train_loader = DataLoader(
-                train_dataset, batch_size=self.batch_size[0], drop_last=True, sampler=sampler
-            )
-        else:
-            self.train_loader = DataLoader(train_dataset, batch_size=self.batch_size[0], shuffle=True, drop_last=True)
+        self.train_loaders = [
+            DataLoader(v, batch_size=self.batch_size[k], shuffle=True,
+                       sampler=ret_sampler(v) if args.weight_sampler else None)
+            for k, v in train_datasets.items()
+        ]
+        self.test_loaders = [
+            DataLoader(v, batch_size=self.default_batch_size)
+            for k, v in test_datasets.items()
+        ]
+
+        sampler = ret_sampler(train_dataset) if args.weight_sampler else None
+        self.train_loader = DataLoader(train_dataset, batch_size=self.batch_size[0], shuffle=True, sampler=sampler)
         self.test_loader = DataLoader(test_dataset, batch_size=self.default_batch_size)
+
         self.ite = 0
 
     def run(self):
         pass
 
-    def test_model(self, model=None, data_loader=None):
+    def add_test_dataset(self, path):
+        args = {'text': [], 'label': []}
+        with open(path, 'r', encoding='utf8') as f:
+            lines = f.readlines()
+            n_samples = len(lines)
+
+        for line in lines:
+            text, label = line.strip().split('|')
+            args['text'].append(text)
+            args['label'].append(int(label))
+        args = re_tokenizer(args)
+        dataset = REDataset(args, n_samples, n_classes=2)
+        loader = DataLoader(dataset, batch_size=self.default_batch_size)
+        self.test_loaders.append(loader)
+
+    def test_model(self, model=None, data_loader=None, case_study=False):
         if model is None:
             model = copy.deepcopy(self.model)
         if data_loader is None:
@@ -72,9 +93,9 @@ class Base(object):
         model.eval()
         res_inputs, res_labels, res_features, res_logits, res_losses = ([] for _ in range(5))
 
-        data_loader = tqdm(data_loader)
+        t = tqdm(data_loader)
 
-        for i, data in enumerate(data_loader):
+        for i, data in enumerate(t):
             inputs, labels = data
 
             if len(res_inputs) == 0:
@@ -90,7 +111,6 @@ class Base(object):
             with torch.no_grad():
                 features, logits, losses = model(inputs, labels)
 
-            res_logits.append(logits.cpu().detach().numpy())
             res_losses.append(losses[0].mean().item())
 
             if len(res_features) == 0:
@@ -98,17 +118,79 @@ class Base(object):
             for ls, feature in zip(res_features, features):
                 ls.append(feature.cpu().detach().numpy())
 
+            if len(res_logits) == 0:
+                res_logits = [[] for _ in range(len(logits))]
+            for ls, logit in zip(res_logits, logits):
+                ls.append(logit.cpu().detach().numpy())
+
         res_inputs = [np.concatenate(ls) for ls in res_inputs]
         res_labels = [np.concatenate(ls) for ls in res_labels]
         res_features = [np.concatenate(ls) for ls in res_features]
-        res_logits = np.concatenate(res_logits)
+        res_logits = [np.concatenate(ls) for ls in res_logits]
         loss = sum(res_losses) / len(res_losses)
 
-        metrics = self.dataset.metric(res_inputs, res_labels, res_logits)
+        metrics = data_loader.dataset.metric(res_inputs, res_labels, res_logits, case_study=case_study)
         metrics.update({'loss': loss})
         logger.info(f'loss: {loss:.4f}')
 
         return metrics, res_inputs, res_labels, res_features, res_logits
+
+    def test_save_models(self, m):
+        g_test_metrics = []
+        p_test_metrics = []
+        if self.save_central:
+            logger.info('test centralized dataset')
+            model = copy.deepcopy(self.model)
+            metrics = self.test_model(model, data_loader=self.test_loader)[0]
+            if metrics[m] > self.c_best_metric:
+                self.c_best_metric = metrics[m]
+                torch.save(self.model.state_dict(), self.c_ckpt)
+                logger.info('centralized new model saved')
+            logger.info(f'central best {m}: {self.c_best_metric:.4f}')
+
+        # ls = []
+        for i, data_loader in enumerate(self.test_loaders):
+            if self.save_global:
+                logger.info(f'test client {i} global model')
+                metrics = self.test_model(data_loader=data_loader)[0]
+                g_test_metrics.append(metrics[m])
+                # ls.append([features[-2]])
+
+            if self.save_personal:
+                logger.info(f'test client {i} personal model')
+                model = copy.deepcopy(self.clients[i].model)
+                metrics = self.test_model(model, data_loader=data_loader)[0]
+                p_test_metrics.append(metrics[m])
+
+                # if self.ite % 5 == 0:
+                #     ckpt = self.p_ckpts[i].split('.')
+                #     ckpt = f'{ckpt[0]}_ite{self.ite}.pth'
+                #     torch.save(self.model.state_dict(), ckpt)
+                #     logger.info(f'client {i} iteration {self.ite} personal model saved')
+        # cmp_cosine_euclidean(ls)
+
+        if self.save_global:
+            g_test_metric = sum(g_test_metrics) / len(g_test_metrics)
+            if g_test_metric > self.g_best_metric:
+                self.g_best_metric = g_test_metric
+                torch.save(self.model.state_dict(), self.g_ckpt)
+                logger.info('global new model saved')
+            logger.info(f'global best {m}: {self.g_best_metric:.4f}')
+
+        if self.save_personal:
+            p_test_metric = sum(p_test_metrics) / len(p_test_metrics)
+            if p_test_metric > self.p_best_metric:
+                self.p_best_metric = p_test_metric
+                for i in range(self.n_clients):
+                    torch.save(self.model.state_dict(), self.p_ckpts[i])
+                logger.info('personal new models saved')
+            logger.info(f'personal best {m}: {self.p_best_metric:.4f}')
+
+            # if self.ite % 5 == 0:
+            #     ckpt = self.g_ckpt.split('.')
+            #     ckpt = f'{ckpt[0]}_ite{self.ite}.pth'
+            #     torch.save(self.model.state_dict(), ckpt)
+            #     logger.info(f'iteration {self.ite} global model saved')
 
     def load(self, ckpt, exclude_key=' '):
         sd = self.model.state_dict()
@@ -128,26 +210,143 @@ class Base(object):
 class Centralized(Base):
     def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
         super(Centralized, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
-        self.client = BaseClient(0, self.train_loader, self.test_loader, model, args)
+        self.client = BaseClient(0, self.train_loader, self.test_loader, model, self.n_epochs[0], args)
 
     def run(self, m='f1'):
         for self.ite in range(self.n_iterations):
             logger.info(f'********iteration: {self.ite}********')
 
+            # test
+            self.test_save_models(m)
             # train
             model_state_dict = self.client.train_model()
             self.model.load_state_dict(model_state_dict)
 
-            # test
-            metrics = self.test_model()[0]
-            test_metric = metrics[m]
-            logger.info(f'current {m}: {test_metric:.4f}')
 
-            if test_metric > self.g_best_metric:
+class MTL(Base):
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
+        super(MTL, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+        self.client = MTLClient(0, self.train_loaders, self.test_loaders, model, self.n_epochs[0], args)
+
+    def run(self, m='f1'):
+        for self.ite in range(self.n_iterations):
+            logger.info(f'********iteration: {self.ite}********')
+
+            # test
+            self.test_save_models(m)
+            # train
+            model_state_dict = self.client.train_model()
+            self.model.load_state_dict(model_state_dict)
+
+    def test_model(self, doc=None, model=None, data_loader=None, case_study=False):
+        if model is None:
+            model = copy.deepcopy(self.model)
+        if data_loader is None:
+            data_loader = self.test_loader
+
+        model = model.cuda()
+        model.eval()
+        res_inputs, res_labels, res_features, res_logits, res_losses = ([] for _ in range(5))
+
+        t = tqdm(data_loader)
+
+        for i, data in enumerate(t):
+            inputs, labels = data
+
+            if len(res_inputs) == 0:
+                res_inputs = [[] for _ in range(len(inputs))]
+            for ls, d in zip(res_inputs, inputs):
+                ls.append(d.numpy())
+            if len(res_labels) == 0:
+                res_labels = [[] for _ in range(len(labels))]
+            for ls, d in zip(res_labels, labels):
+                ls.append(d.numpy())
+
+            inputs, labels = [x.cuda() for x in inputs], [x.cuda() for x in labels]
+            inputs += [doc]
+            with torch.no_grad():
+                features, logits, losses = model(inputs, labels)
+
+            res_losses.append(losses[0].mean().item())
+
+            if len(res_features) == 0:
+                res_features = [[] for _ in range(len(features))]
+            for ls, feature in zip(res_features, features):
+                ls.append(feature.cpu().detach().numpy())
+
+            if len(res_logits) == 0:
+                res_logits = [[] for _ in range(len(logits))]
+            for ls, logit in zip(res_logits, logits):
+                ls.append(logit.cpu().detach().numpy())
+
+        res_inputs = [np.concatenate(ls) for ls in res_inputs]
+        res_labels = [np.concatenate(ls) for ls in res_labels]
+        res_features = [np.concatenate(ls) for ls in res_features]
+        res_logits = [np.concatenate(ls) for ls in res_logits]
+        loss = sum(res_losses) / len(res_losses)
+
+        metrics = data_loader.dataset.metric(res_inputs, res_labels, res_logits, case_study=case_study)
+        metrics.update({'loss': loss})
+        logger.info(f'loss: {loss:.4f}')
+
+        model.cpu()
+        return metrics, res_inputs, res_labels, res_features, res_logits
+
+    def test_save_models(self, m):
+        g_test_metrics = []
+        p_test_metrics = []
+        if self.save_central:
+            logger.info('test centralized dataset')
+            model = copy.deepcopy(self.model)
+            metrics = self.test_model(model, data_loader=self.test_loader)[0]
+            if metrics[m] > self.c_best_metric:
+                self.c_best_metric = metrics[m]
+                torch.save(self.model.state_dict(), self.c_ckpt)
+                logger.info('centralized new model saved')
+            logger.info(f'central best {m}: {self.c_best_metric:.4f}')
+
+        # ls = []
+        for i, data_loader in enumerate(self.test_loaders):
+            if self.save_global:
+                logger.info(f'test client {i} global model')
+                metrics = self.test_model(doc=i, data_loader=data_loader)[0]
+                g_test_metrics.append(metrics[m])
+                # ls.append([features[-2]])
+
+            if self.save_personal:
+                logger.info(f'test client {i} personal model')
+                metrics = self.test_model(doc=i, data_loader=data_loader)[0]
+                p_test_metrics.append(metrics[m])
+
+                # if self.ite % 5 == 0:
+                #     ckpt = self.p_ckpts[i].split('.')
+                #     ckpt = f'{ckpt[0]}_ite{self.ite}.pth'
+                #     torch.save(self.model.state_dict(), ckpt)
+                #     logger.info(f'client {i} iteration {self.ite} personal model saved')
+        # cmp_cosine_euclidean(ls)
+
+        if self.save_global:
+            g_test_metric = sum(g_test_metrics) / len(g_test_metrics)
+            if g_test_metric > self.g_best_metric:
+                self.g_best_metric = g_test_metric
                 torch.save(self.model.state_dict(), self.g_ckpt)
-                self.g_best_metric = test_metric
-                logger.info('new model saved')
-            logger.info(f'best {m}: {self.g_best_metric:.4f}')
+                logger.info('global new model saved')
+            logger.info(f'global best {m}: {self.g_best_metric:.4f}')
+
+        if self.save_personal:
+            p_test_metric = sum(p_test_metrics) / len(p_test_metrics)
+            if p_test_metric > self.p_best_metric:
+                self.p_best_metric = p_test_metric
+                for i in range(self.n_clients):
+                    torch.save(self.model.state_dict(), self.p_ckpts[i])
+                logger.info('personal new models saved')
+            logger.info(f'personal best {m}: {self.p_best_metric:.4f}')
+
+            # if self.ite % 5 == 0:
+            #     ckpt = self.g_ckpt.split('.')
+            #     ckpt = f'{ckpt[0]}_ite{self.ite}.pth'
+            #     torch.save(self.model.state_dict(), ckpt)
+            #     logger.info(f'iteration {self.ite} global model saved')
 
 
 class FedAvg(Base):
@@ -156,18 +355,12 @@ class FedAvg(Base):
         self.aggregate_method = args.aggregate_method
 
         self.clients = [
-            BaseClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
-            for client_id in range(self.n_clients)
+            BaseClient(i, self.train_loaders[i], self.test_loaders[i], model, self.n_epochs[i], args)
+            for i in range(self.n_clients)
         ]
-        self.weights = self.compute_weights()
         self.momentum = args.sm
-        self.save_central = args.save_central
-        self.save_global = args.save_global
-        self.save_personal = args.save_personal
-        self.p_best_metrics = [0 for _ in range(self.n_clients)]
-        self.p_ckpts = [f'{self.ckpt}_client{i}' for i in range(self.n_clients)]
         self.layers = args.layers.split('*')
-
+        self.select_ratio = args.select_ratio
         self.model_cos_sims = {}
         self.grad_cos_sims = {}
 
@@ -180,23 +373,30 @@ class FedAvg(Base):
             for client in self.clients:
                 client.receive_global_model(global_model_dict)
 
+            # 2. select clients
+            select_clients = random.sample(list(range(self.n_clients)), int(self.n_clients * self.select_ratio))
+            select_clients.sort()
+            weights = self.compute_weights(select_clients)
+
             # 2. train client models
             model_dicts = []
-            for i, client in enumerate(self.clients):
-                model_state_dict = client.train_model()
+            for i in select_clients:
+                model_state_dict = self.clients[i].train_model(self.ite)
                 model_dicts.append(model_state_dict)
+                # print(i, int(torch.cuda.memory_allocated() / (1024 * 1024)))
+                # print(i, int(torch.cuda.max_memory_allocated() / (1024 * 1024)))
 
             # update gradient and compute gradient cosine similarity
-            grad_dicts = self.get_grad_dicts(model_dicts)
-            logger.info('compute model cosine similarity')
-            self.compute_model_cos_sims(model_dicts)
-
-            # 3. aggregate into server model
-            model_dict = self.get_global_model_dict(model_dicts)
-            self.model.load_state_dict(model_dict)
+            # grad_dicts = self.get_grad_dicts(model_dicts)
+            # logger.info('compute model cosine similarity')
+            # self.compute_model_cos_sims(model_dicts)
 
             # test and save models
             self.test_save_models(m)
+
+            # 3. aggregate into server model
+            model_dict = self.get_global_model_dict(model_dicts, weights)
+            self.model.load_state_dict(model_dict)
 
     def get_grad_dicts(self, model_dicts):
         grad_dicts = [{} for _ in range(self.n_clients)]
@@ -206,66 +406,17 @@ class FedAvg(Base):
                 grad_dicts[i].update({key: grad})
         return grad_dicts
 
-    def get_global_model_dict(self, model_dicts):
-        logger.info(f'aggregation weights all layers: {self.weights}')
+    def get_global_model_dict(self, model_dicts, weights):
+        logger.info(f'aggregation weights: {weights}')
         model_dict = self.model.state_dict()
         for l, key in enumerate(model_dict.keys()):
+            if not isinstance(model_dict[key], torch.FloatTensor):
+                continue
             model_dict[key] = self.momentum * model_dict[key]
             for i, sd in enumerate(model_dicts):
-                val = sd[key] * self.weights[i]
+                val = sd[key] * weights[i]
                 model_dict[key] += (1 - self.momentum) * val
         return model_dict
-
-    def test_save_models(self, m):
-        g_test_metrics = []
-        if self.save_central:
-            logger.info('test centralized dataset')
-            model = copy.deepcopy(self.model)
-            metrics = self.test_model(model, data_loader=self.test_loader)[0]
-            if metrics[m] > self.c_best_metric:
-                self.c_best_metric = metrics[m]
-                torch.save(self.model.state_dict(), self.c_ckpt)
-                logger.info('centralized new model saved')
-            logger.info(f'central best {m}: {self.c_best_metric:.4f}')
-
-        for i, data_loader in enumerate(self.test_loaders):
-            if self.save_global:
-                logger.info(f'test client {i} global model')
-                model = copy.deepcopy(self.model)
-                metrics = self.test_model(model, data_loader=data_loader)[0]
-
-                g_test_metrics.append(metrics[m])
-
-            if self.save_personal:
-                logger.info(f'test client {i} personal model')
-                model = copy.deepcopy(self.clients[i].model)
-                metrics = self.test_model(model, data_loader=data_loader)[0]
-
-                if metrics[m] > self.p_best_metrics[i]:
-                    self.p_best_metrics[i] = metrics[m]
-                    torch.save(self.clients[i].model.state_dict(), self.p_ckpts[i])
-                    logger.info('personal new model saved')
-                logger.info(f'personal best {m}: {self.p_best_metrics[i]:.4f}')
-
-                # if self.ite % 5 == 0:
-                #     ckpt = self.p_ckpts[i].split('.')
-                #     ckpt = f'{ckpt[0]}_ite{self.ite}.pth'
-                #     torch.save(self.model.state_dict(), ckpt)
-                #     logger.info(f'client {i} iteration {self.ite} personal model saved')
-
-        if self.save_global:
-            g_test_metric = sum(g_test_metrics) / len(g_test_metrics)
-            if g_test_metric > self.g_best_metric:
-                self.g_best_metric = g_test_metric
-                torch.save(self.model.state_dict(), self.g_ckpt)
-                logger.info('global new model saved')
-            logger.info(f'global best {m}: {self.g_best_metric:.4f}')
-
-            # if self.ite % 5 == 0:
-            #     ckpt = self.g_ckpt.split('.')
-            #     ckpt = f'{ckpt[0]}_ite{self.ite}.pth'
-            #     torch.save(self.model.state_dict(), ckpt)
-            #     logger.info(f'iteration {self.ite} global model saved')
 
     def compute_model_cos_sims(self, model_dicts):
         for key in self.model.state_dict().keys():
@@ -305,12 +456,13 @@ class FedAvg(Base):
             cos_sim = json.dumps(np.around(cos_sim, decimals=4).tolist())
             logger.info(f'layer {layer} gradient cosine similarity matrix\n{cos_sim}')
 
-    def compute_weights(self):
+    def compute_weights(self, select_clients):
         if self.aggregate_method == 'sample':
-            weights = self.n_samples
+            weights = [self.n_samples[i] for i in select_clients]
             weights = np.array([w / sum(weights) for w in weights])
         else:
-            weights = np.array([1 / self.n_clients for _ in range(self.n_clients)])
+            n = len(select_clients)
+            weights = np.array([1 / n for _ in range(n)])
         return weights
 
 
@@ -377,21 +529,21 @@ class MOON(FedAvg):
         super(MOON, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
 
         self.clients = [
-            MOONClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
-            for client_id in range(self.n_clients)
+            MOONClient(i, self.train_loaders[i], self.test_loaders[i], model, self.n_epochs[i], args)
+            for i in range(self.n_clients)
         ]
 
 
 class PartialFL(FedAvg):
     def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
         super(PartialFL, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
-        pk = '*'.join(args.pk)
+        pk = '*'.join(args.personal_keys)
         self.g_ckpt = f'{self.ckpt}_{pk}_global'
         self.c_ckpt = f'{self.ckpt}_{pk}_central'
         self.ckpts = [f'{self.ckpt}_{pk}_{i}' for i in range(self.n_clients)]
         self.clients = [
-            PartialFLClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
-            for client_id in range(self.n_clients)
+            PartialFLClient(i, self.train_loaders[i], self.test_loaders[i], model, self.n_epochs[i], args)
+            for i in range(self.n_clients)
         ]
 
 
@@ -402,6 +554,16 @@ class pFedMe(FedAvg):
         self.clients = [
             pFedMeClient(client_id, self.train_loaders[client_id], self.test_loaders[client_id], model, args)
             for client_id in range(self.n_clients)
+        ]
+
+
+class GSN(FedAvg):
+    def __init__(self, train_datasets, test_datasets, train_dataset, test_dataset, model, args):
+        super(GSN, self).__init__(train_datasets, test_datasets, train_dataset, test_dataset, model, args)
+
+        self.clients = [
+            GSNClient(i, self.train_loaders[i], self.test_loaders[i], model, self.n_epochs[i], args)
+            for i in range(self.n_clients)
         ]
 
 

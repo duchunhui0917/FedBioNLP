@@ -12,6 +12,8 @@ from .CKA import linear_CKA
 import torch
 import os
 
+logger = logging.getLogger(os.path.basename(__file__))
+
 
 def process_feature(feature, mode):
     if len(feature.shape) == 3:
@@ -32,31 +34,40 @@ def process_feature(feature, mode):
     return x
 
 
-def cmp_cosine_euclidean(features1, features2, pca=False, mode=None):
-    for layer, (feature1, feature2) in enumerate(zip(features1, features2)):
-        x1, x2 = process_feature(feature1, mode), process_feature(feature2, mode)
-        if pca:
-            pca = PCA(n_components=2)
-            x1 = pca.fit_transform(x1)
-            print(pca.explained_variance_ratio_)
+def cmp_cosine_euclidean(features, pca=False, mode='average'):
+    n = len(features)
+    for i in range(n):
+        f1 = features[i]
+        for j in range(n):
+            if i < j:
+                logger.info(f'client {i} and {j}')
+                f2 = features[j]
+                for layer, (feature1, feature2) in enumerate(zip(f1, f2)):
+                    x1, x2 = process_feature(feature1, mode), process_feature(feature2, mode)
+                    if pca:
+                        pca = PCA(n_components=2)
+                        x1 = pca.fit_transform(x1)
+                        print(pca.explained_variance_ratio_)
 
-            pca = PCA(n_components=2)
-            x2 = pca.fit_transform(x2)
-            print(pca.explained_variance_ratio_)
+                        pca = PCA(n_components=2)
+                        x2 = pca.fit_transform(x2)
+                        print(pca.explained_variance_ratio_)
 
-        MMD = mmd(x1, x2)
-        x1_mean = x1.mean(axis=0, keepdims=True)
-        x2_mean = x2.mean(axis=0, keepdims=True)
-        cosine_sim_12_mean = cosine_similarity(x1_mean, x2_mean)[0][0]
-        euclidean_dist_12_mean = pairwise_distances(x1_mean, x2_mean)[0][0]
+                    MMD = mmd(x1, x2)
+                    x1_mean = x1.mean(axis=0, keepdims=True)
+                    x2_mean = x2.mean(axis=0, keepdims=True)
+                    cosine_sim_mean = cosine_similarity(x1_mean, x2_mean)[0][0]
+                    euclidean_dist_mean = pairwise_distances(x1_mean, x2_mean)[0][0]
 
-        cosine_sim_12 = cosine_similarity(x1, x2).mean()
-        euclidean_dist_12 = pairwise_distances(x1, x2).mean()
+                    cosine_sim = cosine_similarity(x1, x2).mean()
+                    euclidean_dist = pairwise_distances(x1, x2).mean()
 
-        logging.info(f'layer{layer}, shape1: {feature1.shape}, shape2: {feature2.shape}')
-        logging.info(f'cosine_sim_mean: {cosine_sim_12_mean:.4f}, euclidean_dist_mean: {euclidean_dist_12_mean:.4f}')
-        logging.info(f'cosine_sim: {cosine_sim_12:.4f}, euclidean_dist: {euclidean_dist_12:.4f}')
-        logging.info(f'MMD: {MMD:.4f}')
+                    logger.info(
+                        f'layer: {layer}, '
+                        f'cosine_sim_mean: {cosine_sim_mean:.4f}, euclidean_dist_mean: {euclidean_dist_mean:.4f}, '
+                        f'cosine_sim: {cosine_sim:.4f}, euclidean_dist: {euclidean_dist:.4f}, '
+                        f'MMD: {MMD:.4f}'
+                    )
 
 
 def cmp_CKA_sim(features1, features2, mode=None):
@@ -134,6 +145,6 @@ def status_mtx(datasets, n_classes):
     mtx_ = np.zeros((n, n_classes), dtype=np.float)
     for i in range(n):
         for data, label in datasets[i]:
-            mtx[i][label] += 1
+            mtx[i][label[0]] += 1
         mtx_[i][:] = mtx[i][:] / sum(mtx[i][:])
     return mtx, mtx_

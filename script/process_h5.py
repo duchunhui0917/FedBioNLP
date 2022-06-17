@@ -34,7 +34,7 @@ def get_attributes_text(file_name):
     return attributes, atts, train_data, test_data, data
 
 
-def update_h5(file_name):
+def update_re_h5(file_name):
     h5_path = os.path.join(base_dir, f'data/{file_name}_data.h5')
 
     with h5py.File(h5_path, 'r+') as hf:
@@ -54,6 +54,29 @@ def update_h5(file_name):
             hf['X'][str(idx)][()] = sentence
 
         hf["attributes"][()] = json.dumps(attributes)
+
+
+def update_h5(file_name):
+    h5_path = os.path.join(base_dir, f'data/{file_name}_data.h5')
+
+    with h5py.File(h5_path, 'r+') as hf:
+        attributes = json.loads(hf["attributes"][()])
+        train_source_list = attributes['train_source_list']
+        test_source_list = attributes['test_source_list']
+        train_index_list = attributes['train_index_list']
+        test_index_list = attributes['test_index_list']
+
+        source2doc = {'onbn': 0, 'onnw': 1, 'onmz': 2, 'connl03': 3, 'onbc': 4, 'onwb': 5, 'wnut16': 6}
+        doc_idx = {}
+        for idx in train_index_list:
+            doc_idx.update({idx: source2doc[train_source_list[idx][0]]})
+        for idx in test_index_list:
+            doc_idx.update({idx: source2doc[test_source_list[idx - 14000][0]]})
+        attributes['doc_index'] = doc_idx
+        hf["attributes"][()] = json.dumps(attributes)
+
+
+# update_h5('ploner')
 
 
 def sample_false_true(data, num_false, num_true):
@@ -182,7 +205,7 @@ def undersampling_h5(file_name, nums, sampled_name):
         wf.close()
 
 
-def undersampling(file_name, nums, sampled_name):
+def under_sampling(file_name, nums, sampled_name):
     """
 
     Args:
@@ -251,7 +274,7 @@ def sample_by_class(data, nums, label_vocab):
     return sampled_data
 
 
-def undersampling_by_class(file_name, nums, sampled_name):
+def under_sampling_by_class(file_name, nums, sampled_name):
     wf = h5py.File(os.path.join(base_dir, f"data/{file_name}_{sampled_name}_data.h5"), 'w')
 
     attributes, atts, train_data, test_data, data = get_attributes_text(file_name)
@@ -310,17 +333,10 @@ def merge_h5(name_list):
         train_num = len(train_data[0])
         test_num = len(test_data[0])
 
-        false_num = 0
-        true_num = 0
         t = tqdm(range(train_num))
         for i in t:
             for a, x in enumerate(train_data):
                 wf[f'/{atts[a]}/{idx}'] = x[i]
-
-            if train_data[-1][i] == '0':
-                false_num += 1
-            else:
-                true_num += 1
 
             doc_index[idx] = d
             index_list.append(idx)
@@ -483,8 +499,13 @@ def over_sampling_h5(file_name, times=1., aug=False, only_false=True):
 # undersampling_h5('sst_2', [100, 100, 900, 900], '200')
 # undersampling_h5('sst_2', [3000, 300, 900, 900], '3000:300')
 
-merge_h5(['HPRD50', 'LLL'])
+# merge_h5(['PGR_Q1_100', 'BioInfer'])
 # update_h5('semeval_2010_task8')
 
 # undersampling('20news', [1000, 7532], sampled_name='1000')
 # undersampling_by_class('sst_2', [300, 3000, 912, 909], sampled_name='300:3000')
+under_sampling_by_class('20news',
+                        [6, 6, 5, 6, 6, 6, 6, 6, 5, 6, 6, 6, 6, 6, 6, 5, 6, 6, 6, 4,
+                         399, 397, 364, 396, 393, 385, 398, 376, 319, 394, 396, 396, 398, 392, 390, 310, 395, 394, 389,
+                         251],
+                        sampled_name='115')

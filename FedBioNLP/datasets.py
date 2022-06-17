@@ -1,5 +1,6 @@
 import json
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
@@ -22,7 +23,7 @@ class BaseDataset(Dataset):
         return self.n_samples
 
     @staticmethod
-    def metric(inputs, labels, logits, test_mode=True):
+    def metric(inputs, labels, logits, test_mode=True, case_study=False):
         """
         logits and labels are numpy if test_mode is True else torch
         Args:
@@ -35,11 +36,10 @@ class BaseDataset(Dataset):
 
         """
         labels = labels[0]
+        logits = logits[0]
         metric = {}
         if test_mode:
             pred_labels = np.argmax(logits, axis=-1)
-            false_negative = np.where(pred_labels - labels == -1)[0]
-            false_positive = np.where(pred_labels - labels == 1)[0]
             acc = accuracy_score(labels, pred_labels)
             precision = precision_score(labels, pred_labels, average='macro')
             recall = recall_score(labels, pred_labels, average='macro')
@@ -50,8 +50,6 @@ class BaseDataset(Dataset):
             metric.update({'acc': acc, 'precision': precision, 'recall': recall, 'f1': f1})
             for key, val in metric.items():
                 logger.info(f'{key}: {val:.4f}')
-            metric.update({'false_negative': false_negative, 'false_positive': false_positive})
-
         else:
             score, pred_labels = logits.max(-1)
             acc = float((pred_labels == labels).long().sum()) / labels.size(0)
@@ -60,15 +58,75 @@ class BaseDataset(Dataset):
 
 
 class NLPDataset(BaseDataset):
-    def __init__(self, args, n_classes=None, transform=None, doc_index=None):
-        super(NLPDataset, self).__init__(args, n_classes, transform, doc_index)
-        self.data = args[0]
-        self.targets = torch.LongTensor(args[1])
+    def __init__(self, args, n_samples, n_classes=None, transform=None, doc_index=None):
+        super(NLPDataset, self).__init__(args, n_samples, n_classes, transform, doc_index)
+        self.text = args['text']
+        self.doc = args['doc']
+
+        if isinstance(args['input_ids'][0][0], int):
+            self.input_ids = torch.LongTensor(args['input_ids'])
+        else:
+            self.input_ids = torch.FloatTensor(args['input_ids'])
+        if 'attention_mask' in args:
+            self.attention_mask = torch.LongTensor(args['attention_mask'])
+        else:
+            self.attention_mask = None
+        self.label = torch.LongTensor(args['label'])
 
     def __getitem__(self, item):
-        data = [self.data[item]]
-        target = self.targets[item]
-        return data, target
+        if self.attention_mask is not None:
+            data = [self.input_ids[item], self.attention_mask[item]]
+        else:
+            data = [self.input_ids[item]]
+        label = [self.label[item]]
+        return data, label
+
+
+class NERDataset(NLPDataset):
+    def __init__(self, args, n_samples, n_classes=None, transform=None, doc_index=None):
+        super(NERDataset, self).__init__(args, n_samples, n_classes, transform, doc_index)
+        self.label_vocab = args['label vocab']
+
+    def metric(self, inputs, labels, logits, test_mode=True, case_study=False):
+        """
+        logits and labels are numpy if test_mode is True else torch
+        Args:
+            inputs:
+            labels:
+            logits:
+            test_mode:
+
+        Returns:
+
+        """
+        labels = labels[0]  # (B, L)
+        logits = logits[0]  # (B, L, C)
+        metric = {}
+        if test_mode:
+            pred_labels = np.argmax(logits, axis=-1)  # (B, L)
+            labels, pred_labels = labels.flatten(), pred_labels.flatten()
+            acc = accuracy_score(labels, pred_labels)
+            precision = precision_score(labels, pred_labels, average='macro')
+            recall = recall_score(labels, pred_labels, average='macro')
+            f1 = f1_score(labels, pred_labels, average='macro')
+            cf = confusion_matrix(labels, pred_labels)
+            cf = json.dumps(cf.tolist())
+            logger.info(f'confusion matrix\n{cf}')
+            metric.update({'acc': acc, 'precision': precision, 'recall': recall, 'f1': f1})
+            for key, val in metric.items():
+                logger.info(f'{key}: {val:.4f}')
+            true_mask = labels != self.label_vocab['O']
+            true_acc = float(((pred_labels == labels) & true_mask).sum() / true_mask.sum())
+            logger.info(f'true acc: {true_acc:.4f}')
+        else:
+            _, pred_labels = logits.max(-1)
+            labels, pred_labels = labels.flatten(), pred_labels.flatten()
+            acc = float((pred_labels == labels).long().sum()) / labels.size(0)
+            metric.update({'acc': acc})
+            true_mask = labels != self.label_vocab['O']
+            true_acc = float(((pred_labels == labels) & true_mask).sum() / true_mask.sum())
+            metric.update({'true acc': true_acc})
+        return metric
 
 
 class ImageDataset(BaseDataset):
@@ -143,21 +201,146 @@ class ImageCCSADataset(BaseDataset):
         return metric
 
 
-class MaskedLMDataset(BaseDataset):
+class REDataset(BaseDataset):
     def __init__(self, args, n_samples, n_classes=None, transform=None, doc_index=None):
-        super(MaskedLMDataset, self).__init__(args, n_samples, n_classes, transform, doc_index)
+        super(REDataset, self).__init__(args, n_samples, n_classes, transform, doc_index)
+        self.text = args['text']
+        self.tokens = args['tokens']
+        self.doc = args['doc']
+
         self.input_ids = torch.LongTensor(args['input_ids'])
-        self.input_mask = torch.LongTensor(args['input_mask'])
-        self.mlm_input_ids = torch.LongTensor(args['mlm_input_ids'])
-        self.mlm_mask = torch.LongTensor(args['mlm_mask'])
+        self.attention_mask = torch.LongTensor(args['attention_mask'])
+        self.e1_mask = torch.LongTensor(args['e1_mask'])
+        self.e2_mask = torch.LongTensor(args['e2_mask'])
+        self.label = torch.LongTensor(args['label'])
+
+        zero = torch.zeros_like(self.input_ids)
+        self.mlm_input_ids = torch.LongTensor(args['mlm_input_ids']) if 'mlm_input_ids' in args else zero
+        self.mlm_labels = torch.LongTensor(args['mlm_labels']) if 'mlm_labels' in args else zero
+        self.valid_ids = torch.LongTensor(args['valid_ids']) if 'valid_ids' in args else zero
+        # self.dep_matrix = torch.LongTensor(args['dep_matrix']) if 'dep_matrix' in args else zero
+        if 'dep_text' in args:
+            self.dep_text = args['dep_text']
+        self.dep_matrix = zero
 
     def __getitem__(self, item):
-        data = [self.input_ids[item], self.input_mask[item], self.mlm_mask[item]]
-        label = [self.mlm_input_ids[item]]
+        data = [self.input_ids[item], self.attention_mask[item], self.e1_mask[item], self.e2_mask[item],
+                self.valid_ids[item], self.mlm_input_ids[item], self.dep_matrix[item]]
+        label = [self.label[item], self.mlm_labels[item]]
         return data, label
 
-    @staticmethod
-    def metric(inputs, labels, logits, test_mode=True):
+    def metric(self, inputs, labels, logits, test_mode=True, case_study=False):
+        """
+        logits and labels are numpy if test_mode is True else torch
+        Args:
+            case_study:
+            inputs:
+            labels:
+            logits:
+            test_mode:
+
+        Returns:
+
+        """
+        # input_ids, attention_mask, e1_mask, e2_mask, valid_ids, mlm_input_ids, dep_matrix = inputs
+        re_labels, mlm_labels = labels
+        re_logits = logits[0]
+
+        metric = {}
+        if test_mode:
+            re_pred_labels = np.argmax(re_logits, axis=-1)
+            acc = accuracy_score(re_labels, re_pred_labels)
+            precision = precision_score(re_labels, re_pred_labels, average='macro')
+            recall = recall_score(re_labels, re_pred_labels, average='macro')
+            f1 = f1_score(re_labels, re_pred_labels, average='macro')
+            cf = confusion_matrix(re_labels, re_pred_labels)
+            cf = json.dumps(cf.tolist())
+            logger.info(f'confusion matrix\n{cf}')
+            metric.update({'acc': acc, 'precision': precision, 'recall': recall, 'f1': f1})
+            for key, val in metric.items():
+                logger.info(f'{key}: {val:.4f}')
+            # if np.max(mlm_labels) > 0:
+            #     _, mlm_logits, unmask_logits = logits
+            #     n1, n2 = len(mlm_logits), len(mlm_logits[0])
+            #     score = np.zeros((n1, n2))
+            #     for i in range(n1):
+            #         for j, (logits, label, input_id) in enumerate(zip(mlm_logits[i], mlm_labels[i], mlm_input_ids[i])):
+            #             logits = np.exp(logits)
+            #             logits /= np.sum(logits, axis=-1)
+            #             if label != -100:
+            #                 score[i][j] = logits[label]
+            #             else:
+            #                 score[i][j] = logits[input_id]
+            #
+            #     unmask_labels = input_ids.copy()
+            #     unmask_labels[(mlm_input_ids == 103) | (input_ids == 0)] = -100
+            #
+            #     mlm_pred_labels = np.argmax(mlm_logits, axis=-1)
+            #     mlm_mask = (mlm_labels != -100)
+            #     mlm_acc = ((mlm_pred_labels == mlm_labels) & mlm_mask).sum() / mlm_mask.sum()
+            #     metric.update({'mlm acc': mlm_acc})
+            #     logger.info(f'mlm acc: {mlm_acc:.4f}')
+            #
+            #     unmask_pred_labels = np.argmax(unmask_logits, axis=-1)
+            #     unmask_mask = (unmask_labels != -100)
+            #     unmask_acc = ((unmask_pred_labels == unmask_labels) & unmask_mask).sum() / unmask_mask.sum()
+            #     metric.update({'unmask acc': unmask_acc})
+            #     logger.info(f'unmask acc: {unmask_acc:.4f}')
+            if case_study:
+                self.case_study(re_pred_labels, re_labels, re_logits, score, mlm_labels)
+        else:
+            score, re_pred_labels = re_logits.max(-1)
+            acc = float((re_pred_labels == re_labels).long().sum()) / re_labels.size(0)
+            metric.update({'acc': acc})
+
+            # if torch.max(mlm_labels) > 0:
+            #     _, mlm_logits, unmask_logits = logits
+            #     unmask_labels = input_ids.masked_fill((mlm_input_ids == 103) | (input_ids == 0), -100)
+            #
+            #     score, mlm_pred_labels = mlm_logits.max(-1)
+            #     mlm_mask = (mlm_labels != -100)
+            #     mlm_acc = float(((mlm_pred_labels == mlm_labels) & mlm_mask).sum() / mlm_mask.sum())
+            #     metric.update({'mlm acc': mlm_acc})
+            #
+            #     score, unmask_pred_labels = unmask_logits.max(-1)
+            #     unmask_mask = (unmask_labels != -100)
+            #     unmask_acc = float(((unmask_pred_labels == unmask_labels) & unmask_mask).sum() / unmask_mask.sum())
+            #     metric.update({'unmask acc': unmask_acc})
+
+        return metric
+
+    def case_study(self, pre_labels, labels, logits, score, mlm_labels):
+        logits = np.exp(logits)
+        logits /= np.sum(logits, axis=1, keepdims=True)
+        for tc in range(self.n_classes):
+            for fc in range(self.n_classes):
+                if tc != fc:
+                    loc = np.where((labels == tc) & (pre_labels == fc))[0]
+                    for l in loc:
+                        print(self.text[l] + f' {tc} {fc} {logits[l]}')
+                        print(self.tokens[l])
+                        print(score[l])
+                        print(mlm_labels[l])
+
+        # for tc in range(self.n_classes):
+        #     loc = np.where(labels == tc)[0]
+        #     bad_case += [self.text[l] + f'|{tc}' for l in loc]
+        # for case in bad_case:
+        #     print(case)
+
+
+class REMDomainAdaptationDataset(REDataset):
+    def __init__(self, args, n_samples, n_classes=None, transform=None, doc_index=None):
+        super(REMDomainAdaptationDataset, self).__init__(args, n_samples, n_classes, transform, doc_index)
+        self.doc = torch.LongTensor(args['doc'])
+
+    def __getitem__(self, item):
+        data = [self.input_ids[item], self.attention_mask[item], self.e1_mask[item], self.e2_mask[item],
+                self.valid_ids[item], self.dep_matrix[item]]
+        label = [self.label[item], self.doc[item]]
+        return data, label
+
+    def metric(self, inputs, labels, logits, test_mode=True, case_study=False):
         """
         logits and labels are numpy if test_mode is True else torch
         Args:
@@ -169,85 +352,38 @@ class MaskedLMDataset(BaseDataset):
         Returns:
 
         """
-        input_ids, input_mask, mlm_mask = inputs
-        labels = labels[0]
+        re_labels, doc = labels
+        re_logits, domain_logits = logits
+
         metric = {}
         if test_mode:
-            pred_labels = np.argmax(logits, axis=-1)
-            acc = float((pred_labels == labels).sum() / mlm_mask.size)
-            mask_acc = float(((pred_labels == labels) * mlm_mask).sum() / mlm_mask.sum())
-            metric.update({'acc': acc, 'mask_acc': mask_acc})
+            re_pred_labels = np.argmax(re_logits, axis=-1)
+            acc = accuracy_score(re_labels, re_pred_labels)
+            precision = precision_score(re_labels, re_pred_labels, average='macro')
+            recall = recall_score(re_labels, re_pred_labels, average='macro')
+            f1 = f1_score(re_labels, re_pred_labels, average='macro')
+            cf = confusion_matrix(re_labels, re_pred_labels)
+            cf = json.dumps(cf.tolist())
+            logger.info(f'confusion matrix\n{cf}')
+            metric.update({'acc': acc, 'precision': precision, 'recall': recall, 'f1': f1})
+            for key, val in metric.items():
+                logger.info(f'{key}: {val:.4f}')
+
+            domain_pred_labels = np.argmax(domain_logits, axis=-1)
+            domain_acc = accuracy_score(doc, domain_pred_labels)
+            metric.update({'domain acc': domain_acc})
+            logger.info(f'domain acc: {domain_acc:.4f}')
+            if case_study:
+                self.case_study(re_pred_labels, re_labels)
         else:
-            score, pred_labels = logits.max(-1)
-            acc = float((pred_labels == labels).long().sum() / (mlm_mask.size(0) * mlm_mask.size(1)))
-            mask_acc = float(((pred_labels == labels).long() * mlm_mask).sum() / mlm_mask.sum())
-            metric.update({'acc': acc, 'mask_acc': mask_acc})
+            score, re_pred_labels = re_logits.max(-1)
+            acc = float((re_pred_labels == re_labels).long().sum()) / re_labels.size(0)
+            metric.update({'acc': acc})
+
+            score, domain_pred_labels = domain_logits.max(-1)
+            domain_acc = float((domain_pred_labels == doc).long().sum() / doc.size(0))
+            metric.update({'domain acc': domain_acc})
         return metric
-
-
-class REGCNDataset(BaseDataset):
-    def __init__(self, args, n_samples, n_classes=None, transform=None, doc_index=None):
-        super(REGCNDataset, self).__init__(args, n_samples, n_classes, transform, doc_index)
-        self.input_ids = torch.LongTensor(args['input_ids'])
-        self.input_mask = torch.LongTensor(args['input_mask'])
-        self.mlm_input_ids = torch.LongTensor(args['mlm_input_ids'])
-        self.valid_ids = torch.LongTensor(args['valid_ids'])
-        self.e1_mask = torch.LongTensor(args['e1_mask'])
-        self.e2_mask = torch.LongTensor(args['e2_mask'])
-        self.dep_matrix = torch.LongTensor(args['dep_matrix'])
-        self.label = torch.LongTensor(args['label'])
-
-    def __getitem__(self, item):
-        data = [self.input_ids[item], self.input_mask[item], self.valid_ids[item],
-                self.e1_mask[item], self.e2_mask[item], self.dep_matrix[item],
-                self.mlm_input_ids[item]]
-        label = [self.label[item]]
-        return data, label
-
-
-class SCDataset(BaseDataset):
-    def __init__(self, args, n_samples, n_classes=None, transform=None, doc_index=None):
-        super(SCDataset, self).__init__(args, n_samples, n_classes, transform, doc_index)
-        self.input_ids = torch.LongTensor(args['input_ids'])
-        self.attention_mask = torch.LongTensor(args['attention_mask'])
-        self.label = torch.LongTensor(args['label'])
-
-    def __getitem__(self, item):
-        data = [self.input_ids[item], self.attention_mask[item]]
-        label = [self.label[item]]
-        return data, label
-
-
-class REDataset(BaseDataset):
-    def __init__(self, args, n_samples, n_classes=None, transform=None, doc_index=None):
-        super(REDataset, self).__init__(args, n_samples, n_classes, transform, doc_index)
-        self.input_ids = torch.LongTensor(args['input_ids'])
-        self.attention_mask = torch.LongTensor(args['attention_mask'])
-        self.e1_mask = torch.LongTensor(args['e1_mask'])
-        self.e2_mask = torch.LongTensor(args['e2_mask'])
-        self.label = torch.LongTensor(args['label'])
-
-        zero = torch.zeros_like(self.input_ids)
-        self.mlm_input_ids = torch.LongTensor(args['mlm_input_ids']) if 'mlm_input_ids' in args else zero
-        self.valid_ids = torch.LongTensor(args['valid_ids']) if 'valid_ids' in args else zero
-        self.dep_matrix = torch.LongTensor(args['dep_matrix']) if 'dep_matrix' in args else zero
-
-    def __getitem__(self, item):
-        data = [self.input_ids[item], self.attention_mask[item], self.e1_mask[item], self.e2_mask[item],
-                self.mlm_input_ids[item], self.valid_ids[item], self.dep_matrix[item]]
-        label = [self.label[item]]
-        return data, label
-
-
-class REGRLDataset(REDataset):
-    def __init__(self, args, n_samples, n_classes=None, transform=None, doc_index=None):
-        super(REGRLDataset, self).__init__(args, n_samples, n_classes, transform, doc_index)
-        self.doc = torch.LongTensor(args['doc'])
-
-    def __getitem__(self, item):
-        data = [self.input_ids[item], self.input_mask[item], self.e1_mask[item], self.e2_mask[item], self.doc[item]]
-        label = [self.label[item]]
-        return data, label
 
 
 class RelationExtractionMMDTrainDataset(BaseDataset):

@@ -1,6 +1,8 @@
 import copy
 import json
 import os
+import random
+
 import h5py
 import pandas as pd
 from FedBioNLP import aug_back_translate, aug_tfidf, aug_label_reverse, aug_label_random, aug_sent_len
@@ -8,8 +10,151 @@ from stanfordcorenlp import StanfordCoreNLP
 from tqdm import tqdm
 
 base_dir = os.path.expanduser('~/FedBioNLP')
-nlp = StanfordCoreNLP(os.path.join(base_dir, 'stanford-corenlp-4.4.0'))
 
+
+# nlp = StanfordCoreNLP(os.path.join(base_dir, 'stanford-corenlp-4.4.0'))
+
+
+# def statistic_word_freq(ls):
+#     for x in ls:
+#         for word in x:
+
+def amazon_review_txt_to_json(file_name, num=2500):
+    train_num = num * 4 // 5
+    n = file_name.split('.')[0]
+    train_tsv_path = n + f'_{num}_train.tsv'
+    test_tsv_path = n + f'_{num}_test.tsv'
+    with open(file_name, 'r') as f:
+        lines = f.readlines()
+    text1 = []
+    text2 = []
+    text4 = []
+    text5 = []
+    t = tqdm(lines)
+    for line in t:
+        line = line.strip()
+        pos = line.find(':')
+        if pos != -1:
+            if line[pos - 5:pos] == 'score':
+                score = int(float(line[pos + 2:]))
+            if line[pos - 4:pos] == 'text':
+                text = line[pos + 2:]
+        else:
+            if score == 1:
+                text1.append(text)
+            elif score == 2:
+                text2.append(text)
+            elif score == 4:
+                text4.append(text)
+            elif score == 5:
+                text5.append(text)
+    text1 = random.sample(text1, num)
+    text2 = random.sample(text2, num)
+    text4 = random.sample(text4, num)
+    text5 = random.sample(text5, num)
+
+    train_text_false = text1[:train_num] + text2[:train_num]
+    test_text_false = text1[train_num:] + text2[train_num:]
+    train_label_false = [0] * len(train_text_false)
+    test_label_false = [0] * len(test_text_false)
+
+    train_text_true = text4[:train_num] + text5[:train_num]
+    test_text_true = text4[train_num:] + text5[train_num:]
+    train_label_true = [1] * len(train_text_true)
+    test_label_true = [1] * len(test_text_true)
+
+    train_data = {'text': train_text_false + train_text_true,
+                  'label': train_label_false + train_label_true}
+
+    test_data = {'text': test_text_false + test_text_true,
+                 'label': test_label_false + test_label_true}
+
+    train_df = pd.DataFrame(train_data)
+    train_df.to_csv(train_tsv_path, sep='\t', index=False, header=False)
+    test_df = pd.DataFrame(test_data)
+    test_df.to_csv(test_tsv_path, sep='\t', index=False, header=False)
+
+    print('hello')
+
+
+def amazon_txt2h5():
+    h5_path = os.path.join(base_dir, f'data/imdb_data.h5')
+    hf = h5py.File(h5_path, 'w')
+    doc_index = {}
+    index_list = []
+    train_index = []
+    test_index = []
+    idx = 0
+
+    train_data = os.path.join(base_dir, f'data/sentiment_classification/IMDB_train.tsv')
+    with open(train_data, 'r', encoding='utf8') as f:
+        lines = f.readlines()
+
+    t = tqdm(lines)
+    for line in t:
+        ls = line.strip().split('\t')
+        hf[f'/X/{idx}'] = ' '.join(ls[:-1])
+        hf[f'/Y/{idx}'] = ls[-1]
+        index_list.append(idx)
+        train_index.append(idx)
+        doc_index[idx] = 0
+        idx += 1
+
+    test_data = os.path.join(base_dir, f'data/sentiment_classification/IMDB_test.tsv')
+    with open(test_data, 'r', encoding='utf8') as f:
+        lines = f.readlines()
+
+    t = tqdm(lines)
+    for line in t:
+        ls = line.strip().split('\t')
+        hf[f'/X/{idx}'] = ' '.join(ls[:-1])
+        hf[f'/Y/{idx}'] = ls[-1]
+        index_list.append(idx)
+        test_index.append(idx)
+        doc_index[idx] = 0
+        idx += 1
+    attributes = {'doc_index': doc_index,
+                  'label_vocab': {
+                      'negative': 0,
+                      'positive': 1
+                  },
+                  'num_labels': 2,
+                  'index_list': index_list,
+                  'train_index_list': train_index,
+                  'test_index_list': test_index,
+                  'task_type': 'text_classification'}
+    hf['/attributes'] = json.dumps(attributes)
+    hf.close()
+
+
+# amazon_txt2h5()
+
+
+# amazon_review_txt_to_json(os.path.join(base_dir, 'data/amazon_review/Movies_&_TV.txt'), 1500)
+# amazon_review_txt2h5('Movies_&_TV_1500')
+def amazon_csv2h5():
+    path = os.path.join(base_dir, 'data/sentiment_classification/IMDB Dataset.csv')
+    train_path = os.path.join(base_dir, 'data/sentiment_classification/IMDB_train.tsv')
+    test_path = os.path.join(base_dir, 'data/sentiment_classification/IMDB_test.tsv')
+
+    df = pd.read_csv(path)
+    df.columns = ['text', 'label']
+    df_true = df[df['label'] == 'positive']
+    df_false = df[df['label'] == 'negative']
+    df_true_train = df_true.sample(frac=0.8)
+    df_true_test = df_true[~df_true.index.isin(df_true_train.index)]
+
+    df_false_train = df_false.sample(frac=0.8)
+    df_false_test = df_false[~df_false.index.isin(df_false_train.index)]
+
+    df_train = pd.merge(df_true_train, df_false_train, how='outer')
+    df_test = pd.merge(df_true_test, df_false_test, how='outer')
+
+    df_train.to_csv(train_path, sep='\t', index=False, header=False)
+    df_test.to_csv(test_path, sep='\t', index=False, header=False)
+
+
+# amazon_csv2h5()
 
 def process_i2b2_lines(lines, rel):
     e1, label, e2 = rel.split('||')
@@ -293,11 +438,10 @@ def csv2tsv(name_list):
             file_path = file_path.split('.')[0] + '.tsv'
             df.to_csv(file_path, index=False, sep='\t', encoding='utf-8')
 
-
 # bio_RE_txt2h5('GAD', process=True)
 # bio_RE_txt2h5('EU-ADR', process=True)
 # bio_RE_txt2h5('CoMAGC', process=True)
-bio_RE_txt2h5('PGR_Q1', process=True)
+# bio_RE_txt2h5('PGR_Q1', process=True)
 # bio_RE_txt2h5('PGR_Q2', process=True)
 
 # bio_RE_txt2h5('AIMed', process=True)

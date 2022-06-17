@@ -109,3 +109,4 @@ def ret_sampler(dataset):
     weights = [nums[int(label[0])] for data, label in dataset]
     sampler = WeightedRandomSampler(weights, num_samples=dataset.n_samples, replacement=True)
     return sampler
+

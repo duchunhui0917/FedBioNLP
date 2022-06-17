@@ -1,3 +1,5 @@
+import os
+
 from torchvision import datasets as tv_datasets
 from torchvision import transforms
 import h5py
@@ -6,7 +8,7 @@ import numpy as np
 from .tokenizers import *
 from .datasets import *
 from .models import *
-from .utils.fl_utils import generate_idxes_dirichlet, generate_idxes_kmeans, generate_idxes_group
+from .utils.fl_utils import generate_idxes_dirichlet, generate_idxes_group, get_embedding_Kmeans
 
 logger = logging.getLogger(os.path.basename(__file__))
 base_dir = os.path.expanduser('~/FedBioNLP')
@@ -117,10 +119,7 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, parser_args
         train_args = [train_dataset.data, np.array(train_dataset.targets)]
         test_args = [test_dataset.data, np.array(test_dataset.targets)]
     else:
-        my_dataset = NLPDataset
         data_file = os.path.join(base_dir, f'data/{dataset_name}_data.h5')
-        partition_file = os.path.join(base_dir, f'fednlp_data/feature_skew_partition_files/{dataset_name}_partition.h5')
-        embedding_file = os.path.join(base_dir, f'fednlp_data/embedding_files/{dataset_name}_partition.h5')
 
         with h5py.File(data_file, 'r+') as df:
             attributes = json.loads(df["attributes"][()])
@@ -134,6 +133,7 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, parser_args
                 doc_index = attributes['doc_index']
             else:
                 doc_index = {str(i): 0 for i in index_list}
+            logger.info(label_vocab)
 
             # ls["attributes"][()] = json.dumps(attributes)
 
@@ -141,23 +141,41 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, parser_args
             targets = []
             unique_docs = set()
             # specifically for wikiner, ploner
-            if task_type == 'name_entity_recognition':
-                tokenizer = NLP_tokenizer
-                for idx in df['X'].keys():
-                    sentence = df['X'][idx][()]
-                    sentence = [i.decode('UTF-8') for i in sentence]
-                    data.append(''.join(sentence))
+            if task_type == 'seq_tagging':
+                args = {'text': [],
+                        'label': [],
+                        'doc': []}
+                special_args = {'label vocab': label_vocab}
+                n_classes = attributes['num_labels']
+                if parser_args.model_name == 'LSTM':
+                    model = TokenClassificationLSTM(n_classes)
+                else:
+                    model = TokenClassificationBERT(model_name, n_classes)
+                tokenizer = model.tokenizer
+                my_train_dataset = my_test_dataset = model.dataset
 
-                    label = df['Y'][idx][()]
+                t = tqdm(index_list)
+                for idx in t:
+                    sentence = df['X'][str(idx)][()]
+                    sentence = [i.decode('UTF-8') for i in sentence]
+                    args['text'].append(' '.join(sentence))
+
+                    label = df['Y'][str(idx)][()]
                     label = [i.decode('UTF-8') for i in label]
-                    targets.append(label)
-                data = tokenizer(data)
-                seq_length = len(data[0])
-                targets = [target + ['O' for _ in range(seq_length - len(target))] for target in targets]
-                targets = np.array([[label_vocab[w] for w in target] for target in targets])
+                    args['label'].append([label_vocab[y] for y in label])
+
+                    doc = doc_index[str(idx)]
+                    args['doc'].append(doc)
+                    unique_docs.add(doc)
+
+                args = tokenizer(args, special_args, parser_args, model_name)
             # specifically for squad_1.1
             elif task_type == 'reading_comprehension':
-                tokenizer = NLP_tokenizer
+                tokenizer = nlp_tokenizer
+                args = {'text': [],
+                        'label': [],
+                        'doc': []}
+                special_args = {}
                 for i in df['context_X'].keys():
                     question_components = []
                     question = df['question_X'][i][()].decode('UTF-8')
@@ -170,7 +188,9 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, parser_args
                     data.append(" ".join(question_components))
             # specifically for cnn_dailymail, cornell_movie_dialogue
             elif task_type == 'sequence_to_sequence':
-                tokenizer = sc_tokenizer
+                tokenizer = nlp_tokenizer
+                args = {}
+                special_args = {}
                 for i in df['Y'].keys():
                     sentence = df['Y'][i][()].decode('UTF-8')
                     data.append(sentence)
@@ -178,8 +198,9 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, parser_args
 
             elif task_type == 'relation_extraction':
                 n_classes = attributes['num_labels']
-                model = REModel(model_name, n_classes, parser_args.num_gcn_layers)
 
+                model = REModel(model_name, n_classes, parser_args.num_gcn_layers)
+                special_args = {}
                 # model = RELatentGCNModel(model_name, n_classes)
                 # if parser_args.n_clusters:
                 #     cluster_models = [REModel(model_name, n_classes, parser_args.num_gcn_layers) for _ in
@@ -187,18 +208,12 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, parser_args
                 #     res.update({'cluster_models': cluster_models})
                 # if parser_args.horizon:
                 #     model = REHorizonModel(model_name, n_classes)
-                # if parser_args.GRL:
-                #     model = REGRLModel(model_name, n_classes)
-                # if parser_args.MMD:
-                #     model = REMMDModel(model_name, n_classes)
                 # if parser_args.CCSA:
                 #     model = RECCSAModel(model_name, n_classes)
-                if parser_args.alg == 'GSN':
-                    model = REGSNModel(model_name, n_classes, parser_args.num_gcn_layers)
-                if parser_args.alg == 'SCL':
-                    model = RESCLModel(model_name, n_classes, parser_args.num_gcn_layers)
-                # model = RelationExtractionHorizonBERT(model_name, n_classes)
-
+                if parser_args.alg == 'DomainGRL':
+                    model = REDomainGRLModel(model_name, n_classes, parser_args.num_gcn_layers, parser_args.lambda_)
+                if parser_args.alg == 'DomainMMD':
+                    model = REDomainMMDModel(model_name, n_classes, parser_args.num_gcn_layers, parser_args.lambda_)
                 my_train_dataset = my_test_dataset = model.dataset
                 n_classes = attributes['num_labels']
 
@@ -245,7 +260,12 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, parser_args
                         args['label'].append(label_vocab[label])
                         args['doc'].append(doc)
                         unique_docs.add(doc)
+
                     args = tokenizer(args, model_name)
+                n_docs = len(unique_docs)
+                if parser_args.alg == 'MTL':
+                    model = REMTLModel(model_name, n_classes, parser_args.num_gcn_layers, n_docs)
+
 
 
             # specifically for 20news, agnews, sst_2, sentiment140, semeval_2010_task8
@@ -253,12 +273,14 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, parser_args
                 args = {'text': [],
                         'label': [],
                         'doc': []}
+                special_args = {}
 
                 n_classes = attributes['num_labels']
-                model = SCModel(model_name, n_classes)
-                if parser_args.SCL:
-                    model = SCSCLModel(model_name, n_classes)
-                tokenizer = sc_tokenizer
+                if parser_args.model_name == 'LSTM':
+                    model = SequenceClassificationLSTM(n_classes)
+                else:
+                    model = SequenceClassificationBERT(model_name, n_classes, parser_args.load_pretrain)
+                tokenizer = model.tokenizer
                 my_train_dataset = my_test_dataset = model.dataset
 
                 for idx in index_list:
@@ -270,13 +292,16 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, parser_args
                     args['doc'].append(doc)
                     unique_docs.add(doc)
 
-                args = tokenizer(args, model_name, max_seq_length)
+                args = tokenizer(args, parser_args, model_name)
             else:
                 raise NotImplementedError
 
     train_args = {k: [v[i] for i in train_idx] for k, v in args.items()}
+    train_args = dict(train_args, **special_args)
     test_args = {k: [v[i] for i in test_idx] for k, v in args.items()}
+    test_args = dict(test_args, **special_args)
     num_train, num_test = len(train_idx), len(test_idx)
+    logger.info('creating centralized train/test dataset')
 
     centralized_train_dataset = my_train_dataset(train_args, num_train, n_classes, transform_aug, train_doc_index)
     centralized_test_dataset = my_test_dataset(test_args, num_test, n_classes, transform_normal, test_doc_index)
@@ -288,18 +313,22 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, parser_args
         train_datasets = {0: centralized_train_dataset}
         test_datasets = {0: centralized_test_dataset}
         return clients, train_datasets, test_datasets, centralized_train_dataset, centralized_test_dataset, model, res
-    elif split_type == 'idx_split':
+    elif split_type == 'doc_split':
         n_docs = len(unique_docs)
         clients = list(range(n_docs))
-        logger.info(f'number of classes: {n_classes}')
+
         logger.info(f'unique docs: {unique_docs}')
 
         for d in unique_docs:
             cur_train_idx = [idx for idx in train_idx if doc_index[str(idx)] == d]
             cur_test_idx = [idx for idx in test_idx if doc_index[str(idx)] == d]
             train_args = {k: [v[idx] for idx in cur_train_idx] for k, v in args.items()}
+            train_args = dict(train_args, **special_args)
             test_args = {k: [v[idx] for idx in cur_test_idx] for k, v in args.items()}
+            test_args = dict(test_args, **special_args)
+
             num_train, num_test = len(cur_train_idx), len(cur_test_idx)
+            logger.info('creating doc train/test datasets')
 
             train_dataset = my_train_dataset(train_args, num_train, n_classes, transform_aug, train_doc_index)
             train_datasets.update({d: train_dataset})
@@ -308,9 +337,9 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, parser_args
 
             logger.info(f'doc: {d}, number of samples of train/test dataset: {num_train}/{num_test}')
         return clients, train_datasets, test_datasets, centralized_train_dataset, centralized_test_dataset, model, res
-    elif split_type == 'label_shift':
+    elif split_type == 'label_split':
         logger.info('start splitting data according to label shift.')
-        if not parser_args.n_clusters:
+        if parser_args.n_clusters == 0:
             train_idxes = generate_idxes_dirichlet(train_args['label'], n_clients, n_classes, parser_args.beta)
             test_idxes = generate_idxes_dirichlet(test_args['label'], n_clients, n_classes, parser_args.beta)
         else:
@@ -322,30 +351,48 @@ def process_dataset(dataset_name, model_name, split_type, n_clients, parser_args
             train_idx = train_idxes[i]
             num_train = len(train_idx)
             client_train_args = {k: [v[idx] for idx in train_idx] for k, v in train_args.items()}
+            client_train_args = dict(client_train_args, **special_args)
             train_dataset = my_train_dataset(client_train_args, num_train, n_classes, transform_aug, train_doc_index)
             train_datasets.update({i: train_dataset})
 
             test_idx = test_idxes[i]
             num_test = len(test_idx)
             client_test_args = {k: [v[idx] for idx in test_idx] for k, v in test_args.items()}
+            client_test_args = dict(client_test_args, **special_args)
             test_dataset = my_test_dataset(client_test_args, num_test, n_classes, transform_normal, test_doc_index)
             test_datasets.update({i: test_dataset})
             logger.info(f'client: {i}, number of samples of train/test dataset: {num_train}/{num_test}')
 
         return clients, train_datasets, test_datasets, centralized_train_dataset, centralized_test_dataset, model, res
-    elif split_type == 'feature shift':
-        logger.info('Start splitting data according to feature shift.')
-        train_idxes, test_idxes = generate_idxes_kmeans(data_file, partition_file, embedding_file, task_type,
-                                                        n_clients)
+    elif split_type == 'feature_split':
+        logger.info('start splitting data according to feature shift.')
+        train_path = os.path.join(base_dir, f'embedding/{parser_args.dataset_name}_train.pkl')
+        test_path = os.path.join(base_dir, f'embedding/{parser_args.dataset_name}_test.pkl')
+        train_classes = get_embedding_Kmeans(train_args['text'], parser_args.n_clients, train_path)
+        test_classes = get_embedding_Kmeans(test_args['text'], parser_args.n_clients, test_path)
+
+        train_idxes = [[] for _ in range(n_clients)]
+        for i, c in enumerate(train_classes):
+            train_idxes[c].append(i)
+        test_idxes = [[] for _ in range(n_clients)]
+        for i, c in enumerate(test_classes):
+            test_idxes[c].append(i)
+
         for i in range(n_clients):
             train_idx = train_idxes[i]
+            num_train = len(train_idx)
+            client_train_args = {k: [v[idx] for idx in train_idx] for k, v in train_args.items()}
+            client_train_args = dict(client_train_args, **special_args)
+            train_dataset = my_train_dataset(client_train_args, num_train, n_classes, transform_aug, train_doc_index)
+            train_datasets.update({i: train_dataset})
+
             test_idx = test_idxes[i]
-            train_data, train_targets = data[train_idx], targets[train_idx]
-            test_data, test_targets = data[test_idx], targets[test_idx]
-            train_dataset = my_dataset(train_data, train_targets, transform_aug)
-            train_datasets.update({int(idx): train_dataset})
-            test_dataset = my_dataset(test_data, test_targets, transform_normal)
-            test_datasets.update({int(idx): test_dataset})
-        return clients, train_datasets, test_datasets, centralized_train_dataset, centralized_test_dataset
+            num_test = len(test_idx)
+            client_test_args = {k: [v[idx] for idx in test_idx] for k, v in test_args.items()}
+            client_test_args = dict(client_test_args, **special_args)
+            test_dataset = my_test_dataset(client_test_args, num_test, n_classes, transform_normal, test_doc_index)
+            test_datasets.update({i: test_dataset})
+            logger.info(f'client: {i}, number of samples of train/test dataset: {num_train}/{num_test}')
+        return clients, train_datasets, test_datasets, centralized_train_dataset, centralized_test_dataset, model, res
     else:
         raise Exception("Invalid split type.")
